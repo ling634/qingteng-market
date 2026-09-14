@@ -28,8 +28,15 @@ const NAV_ITEMS = [
 
 export default function Header() {
   const navigate = useNavigate();
-  const { auth } = useApp();
+  const { auth, unreadMessages } = useApp();
   const [open, setOpen] = useState(false);
+
+  const unreadBadge = (path: string) =>
+    path === '/messages' && unreadMessages > 0 ? (
+      <span className="absolute -top-1.5 -right-2.5 min-w-[16px] h-4 px-1 rounded-full bg-destructive text-white text-[10px] font-medium flex items-center justify-center leading-none">
+        {unreadMessages > 99 ? '99+' : unreadMessages}
+      </span>
+    ) : null;
 
   return (
     <header className="sticky top-0 z-50 w-full bg-background/80 backdrop-blur-md border-b border-border/40">
@@ -65,7 +72,10 @@ export default function Header() {
                   )
                 }
               >
-                <Icon className="size-4" />
+                <span className="relative">
+                  <Icon className="size-4" />
+                  {unreadBadge(item.path)}
+                </span>
                 {item.label}
               </NavLink>
             );
@@ -114,7 +124,10 @@ export default function Header() {
                             )
                           }
                         >
-                          <Icon className="size-5" />
+                          <span className="relative">
+                            <Icon className="size-5" />
+                            {unreadBadge(item.path)}
+                          </span>
                           {item.label}
                         </NavLink>
                       </SheetClose>

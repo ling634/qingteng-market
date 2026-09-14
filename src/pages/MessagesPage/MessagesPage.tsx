@@ -21,6 +21,7 @@ import {
   fetchMessages,
   fetchProductById,
   getOrCreateConversation,
+  markAllMessagesRead,
   markConversationRead,
   sendMessage,
   type IConversationItem,
@@ -206,6 +207,18 @@ export default function MessagesPage() {
 
   const totalUnread = conversations.reduce((sum, c) => sum + (c.unreadCount > 0 ? 1 : 0), 0);
 
+  // 一键已读：清空所有会话未读
+  const handleMarkAllRead = async () => {
+    if (!myId) return;
+    try {
+      await markAllMessagesRead(myId);
+      setConversations((prev) => prev.map((c) => ({ ...c, unreadCount: 0 })));
+      toast.success('已全部标记为已读');
+    } catch {
+      toast.error('操作失败，请稍后重试');
+    }
+  };
+
   const handleSend = async (e: FormEvent) => {
     e.preventDefault();
     const content = input.trim();
@@ -263,9 +276,21 @@ export default function MessagesPage() {
           <div className="p-4 border-b border-border/60">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-lg font-bold">消息</h2>
-              <Badge variant="secondary" className="text-xs">
-                {totalUnread} 条未读
-              </Badge>
+              <div className="flex items-center gap-2">
+                <Badge variant="secondary" className="text-xs">
+                  {totalUnread} 条未读
+                </Badge>
+                {totalUnread > 0 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => void handleMarkAllRead()}
+                    className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+                  >
+                    一键已读
+                  </Button>
+                )}
+              </div>
             </div>
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />

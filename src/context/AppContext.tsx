@@ -15,6 +15,7 @@ import {
   fetchAds,
   fetchFavoriteIds,
   fetchMyProfile,
+  fetchUnreadMessageCount,
   removeFavorite,
   updateAvatarUrl,
   updateNickname as apiUpdateNickname,
@@ -62,6 +63,8 @@ interface AppContextValue {
   authLoading: boolean;
   ads: IAd[];
   refreshAds: () => Promise<void>;
+  /** 未读私信总条数（全局红点） */
+  unreadMessages: number;
   favorites: string[];
   isFavorite: (id: string) => boolean;
   toggleFavorite: (id: string) => Promise<void>;
@@ -85,6 +88,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [authLoading, setAuthLoading] = useState(true);
   const [ads, setAds] = useState<IAd[]>([]);
   const [favorites, setFavorites] = useState<string[]>([]);
+  const [unreadMessages, setUnreadMessages] = useState(0);
 
   const loadProfile = useCallback(async (userId: string) => {
     try {
@@ -142,6 +146,40 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     void refreshAds();
   }, [refreshAds]);
+
+  // 全局未读私信数：登录后加载，Realtime 监听消息增改（防抖 600ms）
+  useEffect(() => {
+    const userId = auth.userId;
+    if (!auth.isLoggedIn || !userId) {
+      setUnreadMessages(0);
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const refresh = () => {
+      fetchUnreadMessageCount(userId)
+        .then(setUnreadMessages)
+        .catch(() => {});
+    };
+    const debouncedRefresh = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(refresh, 600);
+    };
+    refresh();
+    // RLS 保证只收到自己参与会话的消息事件；别人发来新消息（INSERT）
+    // 或消息被标记已读（UPDATE）都会触发重新计数
+    const channel = supabase
+      .channel(`unread-${userId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'messages' },
+        debouncedRefresh,
+      )
+      .subscribe();
+    return () => {
+      if (timer) clearTimeout(timer);
+      void supabase.removeChannel(channel);
+    };
+  }, [auth.isLoggedIn, auth.userId]);
 
   // ---------- 认证 ----------
 
@@ -309,6 +347,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       authLoading,
       ads,
       refreshAds,
+      unreadMessages,
       favorites,
       isFavorite,
       toggleFavorite,
@@ -324,6 +363,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       authLoading,
       ads,
       refreshAds,
+      unreadMessages,
       favorites,
       isFavorite,
       toggleFavorite,

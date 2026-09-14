@@ -19,6 +19,8 @@ import {
   Ban,
   Undo2,
   Loader2,
+  ExternalLink,
+  CheckCheck,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -59,7 +61,7 @@ import { useApp } from '@/context/AppContext';
 import { toast } from 'sonner';
 import { formatPrice } from '@/lib/utils';
 import { useIsMobile } from '@/hooks/use-mobile';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import type { IAd } from '@/data/ads';
 import type { IProduct } from '@/data/products';
 import type { IUser } from '@/data/users';
@@ -76,6 +78,11 @@ import {
   replyFeedback,
   fetchReportsAdmin,
   setReportStatus,
+  fetchProductById,
+  getOrCreateConversation,
+  sendMessage,
+  markAllFeedbacksRead,
+  markAllReportsRead,
   type IFeedback,
   type IReport,
 } from '@/lib/api';
@@ -153,6 +160,19 @@ export default function AdminPage() {
     activeAds: ads.filter((a) => a.status === 'active').length,
     totalFeedbacks: feedbacks.length,
     pendingFeedbacks: feedbacks.filter((f) => f.status === 'pending').length,
+    unreadFeedbacks: feedbacks.filter((f) => !f.readAt).length,
+    unreadReports: reports.filter((r) => !r.readAt).length,
+  };
+
+  // 管理员：一键已读全部反馈工单
+  const handleMarkAllFeedbacksRead = async () => {
+    try {
+      await markAllFeedbacksRead();
+      toast.success('已全部标记为已读');
+      void reloadFeedbacks();
+    } catch {
+      toast.error('操作失败，请稍后重试');
+    }
   };
 
   const filteredFeedbacks = feedbacks.filter((f) => {
@@ -242,7 +262,7 @@ export default function AdminPage() {
     { key: 'ads', label: '广告位管理', icon: Megaphone },
     { key: 'users', label: '用户管理', icon: Users },
     { key: 'feedback', label: '意见反馈', icon: MessageSquareText, badge: stats.pendingFeedbacks },
-    { key: 'reports', label: '举报记录', icon: Shield },
+    { key: 'reports', label: '举报记录', icon: Shield, badge: stats.unreadReports },
   ];
 
   const renderSidebar = () => (
@@ -955,6 +975,16 @@ export default function AdminPage() {
                       >
                         已回复
                       </Button>
+                      {stats.unreadFeedbacks > 0 && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => void handleMarkAllFeedbacksRead()}
+                        >
+                          <CheckCheck className="size-3.5 mr-1" />
+                          一键已读（{stats.unreadFeedbacks}）
+                        </Button>
+                      )}
                     </div>
                   </div>
                 </CardHeader>
@@ -986,12 +1016,19 @@ export default function AdminPage() {
                                 </div>
                               </div>
                             </div>
-                            <Badge
-                              variant={f.status === 'pending' ? 'destructive' : 'default'}
-                              className="text-xs shrink-0"
-                            >
-                              {f.status === 'pending' ? '待回复' : '已回复'}
-                            </Badge>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              {!f.readAt && (
+                                <Badge variant="destructive" className="text-xs">
+                                  新
+                                </Badge>
+                              )}
+                              <Badge
+                                variant={f.status === 'pending' ? 'destructive' : 'default'}
+                                className="text-xs"
+                              >
+                                {f.status === 'pending' ? '待回复' : '已回复'}
+                              </Badge>
+                            </div>
                           </div>
 
                           {/* 对话消息 */}
@@ -1064,7 +1101,13 @@ export default function AdminPage() {
 
           {/* 举报记录 */}
           {activeTab === 'reports' && (
-            <ReportsPanel reports={reports} onChanged={reloadReports} />
+            <ReportsPanel
+              reports={reports}
+              onChanged={() => {
+                void reloadReports();
+                void reloadProducts();
+              }}
+            />
           )}
         </div>
       </div>
@@ -1079,6 +1122,11 @@ function ReportsPanel({
   reports: IReport[];
   onChanged: () => void;
 }) {
+  const { auth } = useApp();
+  const [confirmReport, setConfirmReport] = useState<IReport | null>(null);
+  const [acting, setActing] = useState(false);
+  const unreadCount = reports.filter((r) => !r.readAt).length;
+
   const toggleStatus = async (r: IReport) => {
     const next = r.status === 'open' ? 'resolved' : 'open';
     try {
@@ -1090,8 +1138,70 @@ function ReportsPanel({
     }
   };
 
+  const handleMarkAllRead = async () => {
+    try {
+      await markAllReportsRead();
+      toast.success('已全部标记为已读');
+      onChanged();
+    } catch {
+      toast.error('操作失败，请稍后重试');
+    }
+  };
+
+  // 下架被举报商品 + 站内私信通知卖家 + 举报标记已处理
+  const handleOfflineAndNotify = async () => {
+    const r = confirmReport;
+    if (!r || !auth.userId) return;
+    setActing(true);
+    try {
+      const res = await fetchProductById(r.targetId);
+      if (!res) {
+        toast.error('商品不存在或已被删除');
+        return;
+      }
+      await setProductStatus(r.targetId, 'offline');
+      const convId = await getOrCreateConversation(
+        r.targetId,
+        auth.userId,
+        res.product.sellerId,
+      );
+      await sendMessage(
+        convId,
+        auth.userId,
+        `【平台通知】你发布的商品《${res.product.title}》因被举报（${r.reason}），已被管理员下架。如有异议，请通过「我的 → 意见反馈」联系我们。`,
+      );
+      await setReportStatus(r.id, 'resolved');
+      toast.success('已下架商品并私信通知卖家');
+      setConfirmReport(null);
+      onChanged();
+    } catch {
+      toast.error('操作失败，请稍后重试');
+    } finally {
+      setActing(false);
+    }
+  };
+
   return (
             <Card>
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div>
+                    <CardTitle className="text-base flex items-center gap-2">
+                      <Shield className="size-4 text-primary" />
+                      举报记录
+                    </CardTitle>
+                    <CardDescription>
+                      共 {reports.length} 条，未读 {unreadCount} 条
+                    </CardDescription>
+                  </div>
+                  {unreadCount > 0 && (
+                    <Button size="sm" variant="outline" onClick={() => void handleMarkAllRead()}>
+                      <CheckCheck className="size-3.5 mr-1" />
+                      一键已读（{unreadCount}）
+                    </Button>
+                  )}
+                </div>
+              </CardHeader>
               <CardContent className="p-0">
                 <div className="w-full overflow-x-auto">
                   <Table>
@@ -1116,9 +1226,20 @@ function ReportsPanel({
                       {reports.map((r) => (
                         <TableRow key={r.id}>
                           <TableCell className="font-medium">
-                            <div>
-                              {r.targetType === 'product' ? '商品' : '用户'}
-                              <span className="text-xs text-muted-foreground ml-1.5 font-normal">
+                            <div className="flex items-center gap-1.5">
+                              {r.targetType === 'product' ? (
+                                <Link
+                                  to={`/products/${r.targetId}`}
+                                  target="_blank"
+                                  className="text-primary hover:underline inline-flex items-center gap-1"
+                                >
+                                  商品
+                                  <ExternalLink className="size-3" />
+                                </Link>
+                              ) : (
+                                '用户'
+                              )}
+                              <span className="text-xs text-muted-foreground font-normal">
                                 #{r.targetId.slice(0, 8)}
                               </span>
                             </div>
@@ -1134,21 +1255,39 @@ function ReportsPanel({
                           <TableCell className="text-sm whitespace-nowrap">{r.reporterNickname}</TableCell>
                           <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{r.createdAt}</TableCell>
                           <TableCell>
-                            <Badge
-                              variant={r.status === 'open' ? 'destructive' : 'default'}
-                              className="text-xs"
-                            >
-                              {r.status === 'open' ? '待处理' : '已处理'}
-                            </Badge>
+                            <div className="flex items-center gap-1.5">
+                              {!r.readAt && (
+                                <Badge variant="destructive" className="text-xs">
+                                  新
+                                </Badge>
+                              )}
+                              <Badge
+                                variant={r.status === 'open' ? 'destructive' : 'default'}
+                                className="text-xs"
+                              >
+                                {r.status === 'open' ? '待处理' : '已处理'}
+                              </Badge>
+                            </div>
                           </TableCell>
                           <TableCell className="text-right whitespace-nowrap">
-                            <Button
-                              variant="secondary"
-                              size="sm"
-                              onClick={() => void toggleStatus(r)}
-                            >
-                              {r.status === 'open' ? '标记已处理' : '重新打开'}
-                            </Button>
+                            <div className="flex items-center justify-end gap-2">
+                              {r.targetType === 'product' && r.status === 'open' && (
+                                <Button
+                                  variant="destructive"
+                                  size="sm"
+                                  onClick={() => setConfirmReport(r)}
+                                >
+                                  下架并通知
+                                </Button>
+                              )}
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                onClick={() => void toggleStatus(r)}
+                              >
+                                {r.status === 'open' ? '标记已处理' : '重新打开'}
+                              </Button>
+                            </div>
                           </TableCell>
                         </TableRow>
                       ))}
@@ -1156,6 +1295,32 @@ function ReportsPanel({
                   </Table>
                 </div>
               </CardContent>
+
+              {/* 下架确认弹窗 */}
+              <Dialog open={!!confirmReport} onOpenChange={(o) => !o && setConfirmReport(null)}>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>下架商品并通知卖家</DialogTitle>
+                    <DialogDescription>
+                      将把被举报商品立即下架，并通过站内私信告知卖家下架原因
+                      {confirmReport ? `（${confirmReport.reason}）` : ''}。
+                      商品可随时在「商品管理」中重新上架。
+                    </DialogDescription>
+                  </DialogHeader>
+                  <DialogFooter>
+                    <Button variant="secondary" onClick={() => setConfirmReport(null)}>
+                      取消
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      disabled={acting}
+                      onClick={() => void handleOfflineAndNotify()}
+                    >
+                      {acting ? '处理中...' : '确认下架并通知'}
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
             </Card>
   );
 }

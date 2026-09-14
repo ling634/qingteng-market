@@ -573,6 +573,8 @@ export interface IFeedback {
   status: 'pending' | 'replied';
   replyContent?: string;
   replyAt?: string;
+  /** 管理员已读时间（ISO），undefined = 未读 */
+  readAt?: string;
   createdAt: string;
   messages: IFeedbackMessage[];
 }
@@ -608,6 +610,7 @@ function mapFeedback(row: any): IFeedback {
     status: row.status,
     replyContent: row.reply_content ?? undefined,
     replyAt: row.reply_at ? fmtTime(row.reply_at) : undefined,
+    readAt: row.read_at ?? undefined,
     createdAt: fmtTime(row.created_at),
     messages: msgs,
   };
@@ -706,6 +709,8 @@ export interface IReport {
   detail: string;
   status: 'open' | 'resolved';
   reporterNickname: string;
+  /** 管理员已读时间（ISO），undefined = 未读 */
+  readAt?: string;
   createdAt: string;
 }
 
@@ -747,6 +752,7 @@ export async function fetchReportsAdmin(): Promise<IReport[]> {
       detail: r.detail ?? '',
       status: r.status,
       reporterNickname: reporter?.nickname ?? '未知用户',
+      readAt: r.read_at ?? undefined,
       createdAt: fmtTime(r.created_at),
     };
   });
@@ -757,6 +763,24 @@ export async function setReportStatus(
   status: 'open' | 'resolved',
 ): Promise<void> {
   const { error } = await supabase.from('reports').update({ status }).eq('id', id);
+  if (error) throw error;
+}
+
+/** 管理员：一键已读全部反馈工单 */
+export async function markAllFeedbacksRead(): Promise<void> {
+  const { error } = await supabase
+    .from('feedbacks')
+    .update({ read_at: new Date().toISOString() })
+    .is('read_at', null);
+  if (error) throw error;
+}
+
+/** 管理员：一键已读全部举报 */
+export async function markAllReportsRead(): Promise<void> {
+  const { error } = await supabase
+    .from('reports')
+    .update({ read_at: new Date().toISOString() })
+    .is('read_at', null);
   if (error) throw error;
 }
 
@@ -934,6 +958,27 @@ export async function markConversationRead(
     .eq('conversation_id', conversationId)
     .neq('sender_id', userId)
     .is('read_at', null);
+}
+
+/** 我的未读消息总条数（RLS 自动限定为我参与的会话） */
+export async function fetchUnreadMessageCount(userId: string): Promise<number> {
+  const { count, error } = await supabase
+    .from('messages')
+    .select('id', { count: 'exact', head: true })
+    .is('read_at', null)
+    .neq('sender_id', userId);
+  if (error) throw error;
+  return count ?? 0;
+}
+
+/** 一键已读：把我所有会话里别人发来的未读消息全部标记已读 */
+export async function markAllMessagesRead(userId: string): Promise<void> {
+  const { error } = await supabase
+    .from('messages')
+    .update({ read_at: new Date().toISOString() })
+    .neq('sender_id', userId)
+    .is('read_at', null);
+  if (error) throw error;
 }
 
 // ---------------------------------------------------------------

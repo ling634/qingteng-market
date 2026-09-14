@@ -96,7 +96,7 @@ export default function HomePage() {
         {/* Hero */}
         <section className="w-full relative overflow-hidden">
           <div className="max-w-7xl mx-auto px-4 md:px-6 pt-6">
-            <div className="relative rounded-3xl overflow-hidden aspect-[16/10] md:aspect-[21/9] shadow-lg">
+            <div className="relative rounded-3xl overflow-hidden aspect-[3/4] sm:aspect-[16/10] md:aspect-[21/9] shadow-lg">
               <Image
                 src={HERO_IMG}
                 alt="青藤集市 hero"
@@ -135,12 +135,12 @@ export default function HomePage() {
                       value={keyword}
                       onChange={(e) => setKeyword(e.target.value)}
                       placeholder="搜索你想要的闲置好物..."
-                      className="bg-transparent border-0 pl-12 pr-28 h-12 text-sm focus-visible:ring-0"
+                      className="bg-transparent border-0 pl-11 pr-24 h-12 text-sm focus-visible:ring-0"
                     />
                     <Button
                       type="submit"
                       size="sm"
-                      className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-full h-9 px-5"
+                      className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-full h-9 px-4"
                     >
                       搜索
                     </Button>
@@ -170,7 +170,7 @@ export default function HomePage() {
         {/* 分类快速入口 */}
         <section className="w-full">
           <div className="max-w-7xl mx-auto px-4 md:px-6">
-            <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
+            <div className="grid grid-cols-5 md:grid-cols-6 gap-2 md:gap-3">
               {CATEGORIES.filter((c) => c.key !== 'all').map((cat, i) => {
                 const Icon = categoryIcons[cat.key] || Sparkles;
                 return (
@@ -181,12 +181,12 @@ export default function HomePage() {
                     viewport={{ once: true }}
                     transition={{ duration: 0.4, delay: i * 0.05 }}
                     onClick={() => handleCategoryClick(cat.key)}
-                    className="flex flex-col items-center gap-2 p-4 rounded-2xl bg-card border border-border/60 hover:border-primary/40 hover:bg-primary/5 transition-all group"
+                    className="flex flex-col items-center gap-1.5 md:gap-2 p-2 md:p-4 rounded-2xl bg-card border border-border/60 hover:border-primary/40 hover:bg-primary/5 transition-all group"
                   >
-                    <div className="size-12 rounded-full bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center text-primary group-hover:scale-110 transition-transform">
-                      <Icon className="size-5" />
+                    <div className="size-9 md:size-12 rounded-full bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center text-primary group-hover:scale-110 transition-transform">
+                      <Icon className="size-4 md:size-5" />
                     </div>
-                    <span className="text-xs font-medium text-foreground">
+                    <span className="text-[11px] md:text-xs font-medium text-foreground whitespace-nowrap">
                       {cat.label}
                     </span>
                   </motion.button>
