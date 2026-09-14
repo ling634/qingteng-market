@@ -43,6 +43,8 @@ import { useApp } from '@/context/AppContext';
 import { CONDITIONS, CATEGORIES } from '@/data/categories';
 import { toast } from 'sonner';
 import { Image } from '@/components/ui/image';
+import { compressImage, makeThumbnail, uploadProductImages } from '@/lib/image';
+import { insertProduct } from '@/lib/api';
 
 const publishSchema = z.object({
   category: z.string().min(1, '请选择商品分类'),
@@ -63,52 +65,21 @@ const publishSchema = z.object({
 
 type PublishFormData = z.infer<typeof publishSchema>;
 
-/** 压缩图片为 dataURL，maxSize=1200px，quality=0.8 */
-function compressImage(file: File, maxSize = 1200, quality = 0.8): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const img = document.createElement('img');
-      img.onload = () => {
-        let { width, height } = img;
-        if (width > height && width > maxSize) {
-          height = (height * maxSize) / width;
-          width = maxSize;
-        } else if (height > maxSize) {
-          width = (width * maxSize) / height;
-          height = maxSize;
-        }
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          reject(new Error('canvas not supported'));
-          return;
-        }
-        ctx.drawImage(img, 0, 0, width, height);
-        try {
-          const dataUrl = canvas.toDataURL('image/jpeg', quality);
-          resolve(dataUrl);
-        } catch (err) {
-          reject(err);
-        }
-      };
-      img.onerror = () => reject(new Error('图片加载失败'));
-      img.src = e.target?.result as string;
-    };
-    reader.onerror = () => reject(new Error('文件读取失败'));
-    reader.readAsDataURL(file);
-  });
-}
-
 const MAX_IMAGES = 6;
+
+interface PendingImage {
+  full: Blob;
+  thumb: Blob;
+  preview: string;
+}
 
 export default function PublishPage() {
   const navigate = useNavigate();
-  const { addProduct, auth } = useApp();
-  const [images, setImages] = useState<string[]>([]);
+  const { auth } = useApp();
+  const [images, setImages] = useState<PendingImage[]>([]);
+  const [compressing, setCompressing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState('');
   const [successOpen, setSuccessOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
@@ -134,20 +105,29 @@ export default function PublishPage() {
       return;
     }
     const toAdd = Array.from(files).slice(0, remaining);
-    setSubmitting(true);
+    setCompressing(true);
     try {
-      const compressed = await Promise.all(toAdd.map((f) => compressImage(f)));
-      setImages((prev) => [...prev, ...compressed]);
-      toast.success(`已添加 ${compressed.length} 张图片`);
-    } catch (err) {
-      toast.error('图片处理失败');
+      const processed = await Promise.all(
+        toAdd.map(async (f) => {
+          const full = await compressImage(f);
+          const thumb = await makeThumbnail(f);
+          return { full, thumb, preview: URL.createObjectURL(full) };
+        }),
+      );
+      setImages((prev) => [...prev, ...processed]);
+      toast.success(`已添加 ${processed.length} 张图片`);
+    } catch {
+      toast.error('图片处理失败，请换一张试试');
     } finally {
-      setSubmitting(false);
+      setCompressing(false);
     }
   };
 
   const removeImage = (idx: number) => {
-    setImages((prev) => prev.filter((_, i) => i !== idx));
+    setImages((prev) => {
+      URL.revokeObjectURL(prev[idx].preview);
+      return prev.filter((_, i) => i !== idx);
+    });
   };
 
   const onSubmit = async (values: PublishFormData) => {
@@ -161,19 +141,31 @@ export default function PublishPage() {
       return;
     }
     setSubmitting(true);
-    await new Promise((r) => setTimeout(r, 800));
-    addProduct({
-      category: values.category,
-      title: values.title,
-      price: Number(values.price),
-      originalPrice: values.originalPrice ? Number(values.originalPrice) : undefined,
-      condition: values.condition,
-      images,
-      description: values.description || '',
-      pickupLocation: values.pickupLocation,
-    });
-    setSubmitting(false);
-    setSuccessOpen(true);
+    try {
+      setUploadProgress(`正在上传图片（共 ${images.length} 张）...`);
+      const { images: imageUrls, thumbs } = await uploadProductImages(
+        auth.userId,
+        images.map((i) => ({ full: i.full, thumb: i.thumb })),
+      );
+      setUploadProgress('正在发布...');
+      await insertProduct(auth.userId, {
+        category: values.category,
+        title: values.title,
+        price: Number(values.price),
+        originalPrice: values.originalPrice ? Number(values.originalPrice) : undefined,
+        condition: values.condition,
+        images: imageUrls,
+        thumbs,
+        description: values.description || '',
+        pickupLocation: values.pickupLocation,
+      });
+      setSuccessOpen(true);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '发布失败，请稍后重试');
+    } finally {
+      setSubmitting(false);
+      setUploadProgress('');
+    }
   };
 
   return (
@@ -216,7 +208,7 @@ export default function PublishPage() {
                       key={i}
                       className="relative aspect-square rounded-lg overflow-hidden bg-muted border border-border/60 group"
                     >
-                      <Image src={img} alt="" className="w-full h-full object-cover" />
+                      <Image src={img.preview} alt="" className="w-full h-full object-cover" />
                       <button
                         type="button"
                         onClick={() => removeImage(i)}
@@ -450,8 +442,8 @@ export default function PublishPage() {
                 </div>
               </div>
 
-              <Button type="submit" className="w-full h-12 text-base" disabled={submitting || images.length === 0}>
-                {submitting ? '发布中...' : '立即发布'}
+              <Button type="submit" className="w-full h-12 text-base" disabled={submitting || compressing || images.length === 0}>
+                {compressing ? '图片处理中...' : submitting ? uploadProgress || '发布中...' : '立即发布'}
               </Button>
             </form>
           </Form>

@@ -17,27 +17,60 @@ import { Input } from '@/components/ui/input';
 import { Image } from '@/components/ui/image';
 import ProductCard from '@/components/ProductCard';
 import ForestGoods from '@/components/ForestGoods';
-import { useApp } from '@/context/AppContext';
 import { CATEGORIES } from '@/data/categories';
-import { useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { supabase } from '@/lib/supabase';
+import { fetchLatestProducts, fetchTopProducts } from '@/lib/api';
+import type { IProduct } from '@/data/products';
 
 const HERO_IMG =
   '/images/hero.png';
 
 export default function HomePage() {
   const navigate = useNavigate();
-  const { products } = useApp();
   const [keyword, setKeyword] = useState('');
+  const [topProducts, setTopProducts] = useState<IProduct[]>([]);
+  const [newProducts, setNewProducts] = useState<IProduct[]>([]);
+  const [loaded, setLoaded] = useState(false);
 
-  const topProducts = products
-    .filter((p) => p.is_top && p.status === 'on_sale')
-    .sort((a, b) => b.top_weight - a.top_weight)
-    .slice(0, 3);
+  const load = useCallback(async () => {
+    try {
+      const [tops, latest] = await Promise.all([
+        fetchTopProducts(3),
+        fetchLatestProducts(6),
+      ]);
+      setTopProducts(tops);
+      setNewProducts(latest);
+    } catch {
+      // 网络异常保持旧数据
+    } finally {
+      setLoaded(true);
+    }
+  }, []);
 
-  const newProducts = products
-    .filter((p) => p.status === 'on_sale')
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-    .slice(0, 6);
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  // Realtime：商品有增删改时自动刷新（1s 防抖，单频道）
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const channel = supabase
+      .channel('home-products')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'products' },
+        () => {
+          if (timerRef.current) clearTimeout(timerRef.current);
+          timerRef.current = setTimeout(() => void load(), 1000);
+        },
+      )
+      .subscribe();
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      void supabase.removeChannel(channel);
+    };
+  }, [load]);
 
   const onSearch = (e: FormEvent) => {
     e.preventDefault();
@@ -244,19 +277,34 @@ export default function HomePage() {
                 <ArrowRight className="size-4 ml-1" />
               </Button>
             </div>
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 md:gap-4">
-              {newProducts.map((p, i) => (
-                <motion.div
-                  key={p.id}
-                  initial={{ opacity: 0, y: 16 }}
-                  whileInView={{ opacity: 1, y: 0 }}
-                  viewport={{ once: true }}
-                  transition={{ duration: 0.4, delay: i * 0.05 }}
-                >
-                  <ProductCard product={p} />
-                </motion.div>
-              ))}
-            </div>
+            {newProducts.length > 0 ? (
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 md:gap-4">
+                {newProducts.map((p, i) => (
+                  <motion.div
+                    key={p.id}
+                    initial={{ opacity: 0, y: 16 }}
+                    whileInView={{ opacity: 1, y: 0 }}
+                    viewport={{ once: true }}
+                    transition={{ duration: 0.4, delay: i * 0.05 }}
+                  >
+                    <ProductCard product={p} />
+                  </motion.div>
+                ))}
+              </div>
+            ) : loaded ? (
+              <div className="flex flex-col items-center justify-center py-16 text-center bg-card border border-dashed border-border/60 rounded-2xl">
+                <div className="size-14 rounded-full bg-primary/10 flex items-center justify-center mb-3">
+                  <Leaf className="size-7 text-primary" />
+                </div>
+                <h3 className="text-base font-medium text-foreground mb-1">
+                  集市刚刚开张，虚位以待
+                </h3>
+                <p className="text-sm text-muted-foreground mb-4">
+                  成为第一个发布闲置的同学吧
+                </p>
+                <Button onClick={() => navigate('/publish')}>发布闲置</Button>
+              </div>
+            ) : null}
           </div>
         </section>
       </main>

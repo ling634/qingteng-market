@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import {
   LayoutDashboard,
   Package,
@@ -9,7 +9,6 @@ import {
   EyeOff,
   ArrowUpDown,
   UserPlus,
-  MessageSquare,
   Search,
   CheckCircle2,
   Menu,
@@ -17,8 +16,10 @@ import {
   LogOut,
   MessageSquareText,
   Send,
+  Ban,
+  Undo2,
+  Loader2,
 } from 'lucide-react';
-import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -60,14 +61,33 @@ import { formatPrice } from '@/lib/utils';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { useNavigate } from 'react-router-dom';
 import type { IAd } from '@/data/ads';
+import type { IProduct } from '@/data/products';
+import type { IUser } from '@/data/users';
+import {
+  fetchAllProductsAdmin,
+  setProductStatus,
+  setProductTop,
+  insertAd,
+  updateAd,
+  setAdStatus,
+  fetchAllUsersAdmin,
+  setUserBanned,
+  fetchAllFeedbacksAdmin,
+  replyFeedback,
+  fetchReportsAdmin,
+  setReportStatus,
+  type IFeedback,
+  type IReport,
+} from '@/lib/api';
+import { uploadMiscImage } from '@/lib/image';
 
 export default function AdminPage() {
   const navigate = useNavigate();
   const isMobile = useIsMobile();
-  const { auth, products, ads, users, feedbacks, setTop, setProductStatus, addAd, updateAd, setAdStatus, adminLogin, replyFeedback, logout } = useApp();
+  const { auth, authLoading, ads, refreshAds, adminLogin, logout } = useApp();
   const [activeTab, setActiveTab] = useState('overview');
   const [showSidebar, setShowSidebar] = useState(false);
-  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
   const [keyword, setKeyword] = useState('');
@@ -75,6 +95,44 @@ export default function AdminPage() {
   const [topFilter, setTopFilter] = useState('all');
   const [feedbackFilter, setFeedbackFilter] = useState('all');
   const [replyMap, setReplyMap] = useState<Record<string, string>>({});
+
+  const [products, setProducts] = useState<IProduct[]>([]);
+  const [users, setUsers] = useState<IUser[]>([]);
+  const [feedbacks, setFeedbacks] = useState<IFeedback[]>([]);
+  const [reports, setReports] = useState<IReport[]>([]);
+  const [dataLoading, setDataLoading] = useState(false);
+
+  const loadAll = useCallback(async () => {
+    setDataLoading(true);
+    const [p, u, f, r] = await Promise.all([
+      fetchAllProductsAdmin().catch(() => [] as IProduct[]),
+      fetchAllUsersAdmin().catch(() => [] as IUser[]),
+      fetchAllFeedbacksAdmin().catch(() => [] as IFeedback[]),
+      fetchReportsAdmin().catch(() => [] as IReport[]),
+    ]);
+    setProducts(p);
+    setUsers(u);
+    setFeedbacks(f);
+    setReports(r);
+    setDataLoading(false);
+  }, []);
+
+  // 管理员登录后拉取全量数据
+  useEffect(() => {
+    if (auth.isAdmin) {
+      void loadAll();
+      void refreshAds();
+    }
+  }, [auth.isAdmin, loadAll, refreshAds]);
+
+  const reloadProducts = () =>
+    fetchAllProductsAdmin().then(setProducts).catch(() => {});
+  const reloadUsers = () =>
+    fetchAllUsersAdmin().then(setUsers).catch(() => {});
+  const reloadFeedbacks = () =>
+    fetchAllFeedbacksAdmin().then(setFeedbacks).catch(() => {});
+  const reloadReports = () =>
+    fetchReportsAdmin().then(setReports).catch(() => {});
 
   const filteredProducts = useMemo(() => {
     return products.filter((p) => {
@@ -105,30 +163,77 @@ export default function AdminPage() {
 
   const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!username.trim() || !password.trim()) {
-      toast.error('请输入账号和密码');
+    if (!email.trim() || !password.trim()) {
+      toast.error('请输入邮箱和密码');
       return;
     }
     setLoginLoading(true);
-    await new Promise((r) => setTimeout(r, 500));
-    const ok = adminLogin(username.trim(), password.trim());
+    const err = await adminLogin(email.trim(), password.trim());
     setLoginLoading(false);
-    if (ok) {
+    if (!err) {
       toast.success('管理员登录成功');
     } else {
-      toast.error('账号或密码错误');
+      toast.error(err);
     }
   };
 
-  const handleReply = (id: string) => {
+  const handleReply = async (id: string) => {
     const reply = replyMap[id]?.trim();
     if (!reply) {
       toast.error('请输入回复内容');
       return;
     }
-    replyFeedback(id, reply);
-    setReplyMap((prev) => ({ ...prev, [id]: '' }));
-    toast.success('回复已发送');
+    try {
+      await replyFeedback(id, reply);
+      setReplyMap((prev) => ({ ...prev, [id]: '' }));
+      toast.success('回复已发送');
+      void reloadFeedbacks();
+    } catch {
+      toast.error('回复失败，请稍后重试');
+    }
+  };
+
+  const handleTop = async (id: string, title: string, weight: number, days: number) => {
+    const expireAt = new Date();
+    expireAt.setDate(expireAt.getDate() + days);
+    try {
+      await setProductTop(id, true, weight, expireAt.toISOString());
+      toast.success(`已设置「${title}」为向阳位置顶`);
+      void reloadProducts();
+    } catch {
+      toast.error('操作失败，请稍后重试');
+    }
+  };
+
+  const handleCancelTop = async (id: string) => {
+    try {
+      await setProductTop(id, false);
+      toast.success('已取消置顶');
+      void reloadProducts();
+    } catch {
+      toast.error('操作失败，请稍后重试');
+    }
+  };
+
+  const handleProductStatus = async (id: string, status: 'on_sale' | 'offline') => {
+    try {
+      await setProductStatus(id, status);
+      toast.success(status === 'offline' ? '已下架商品' : '已上架商品');
+      void reloadProducts();
+    } catch {
+      toast.error('操作失败，请稍后重试');
+    }
+  };
+
+  const handleBan = async (u: IUser, banned: boolean) => {
+    try {
+      await setUserBanned(u.id, banned);
+      toast.success(banned ? `已封禁「${u.nickname}」，其商品已自动下架` : `已解封「${u.nickname}」`);
+      void reloadUsers();
+      void reloadProducts();
+    } catch {
+      toast.error('操作失败，请稍后重试');
+    }
   };
 
   const navItems = [
@@ -136,7 +241,7 @@ export default function AdminPage() {
     { key: 'products', label: '商品管理', icon: Package },
     { key: 'ads', label: '广告位管理', icon: Megaphone },
     { key: 'users', label: '用户管理', icon: Users },
-    { key: 'feedback', label: '意见反馈', icon: MessageSquareText, badge: feedbacks.filter((f) => f.status === 'pending').length },
+    { key: 'feedback', label: '意见反馈', icon: MessageSquareText, badge: stats.pendingFeedbacks },
     { key: 'reports', label: '举报记录', icon: Shield },
   ];
 
@@ -182,11 +287,11 @@ export default function AdminPage() {
              >
                <Icon className="size-4" />
                <span className="flex-1 text-left">{item.label}</span>
-               {item.badge && item.badge > 0 && (
+               {item.badge ? (
                  <span className="text-[10px] bg-destructive text-white rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1.5">
                    {item.badge}
                  </span>
-               )}
+               ) : null}
              </button>
           );
         })}
@@ -199,7 +304,7 @@ export default function AdminPage() {
            <div className="flex-1 min-w-0">
              <div className="text-xs font-medium truncate">{auth.nickname || '管理员'}</div>
              <div className="text-[10px] text-muted-foreground truncate">
-               {auth.studentId || 'admin'}
+               {auth.email || 'admin'}
              </div>
            </div>
          </div>
@@ -208,7 +313,7 @@ export default function AdminPage() {
            size="sm"
            className="w-full mt-2 text-xs text-muted-foreground justify-start"
            onClick={() => {
-             logout();
+             void logout();
              navigate('/');
            }}
          >
@@ -218,6 +323,15 @@ export default function AdminPage() {
        </div>
     </aside>
   );
+
+  // 会话恢复中
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <Loader2 className="size-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
 
   // 登录守卫：未登录管理员账号则显示登录页
   if (!auth.isAdmin) {
@@ -239,12 +353,12 @@ export default function AdminPage() {
             </div>
             <form onSubmit={handleAdminLogin} className="space-y-4">
               <div className="space-y-1.5">
-                <label className="text-sm font-medium text-foreground">管理员账号</label>
+                <label className="text-sm font-medium text-foreground">管理员邮箱</label>
                 <Input
-                  type="text"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  placeholder="请输入管理员账号"
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="请输入管理员邮箱"
                   autoFocus
                 />
               </div>
@@ -255,12 +369,11 @@ export default function AdminPage() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="请输入密码"
-                  onKeyDown={(e) => e.key === 'Enter' && handleAdminLogin(e as unknown as React.FormEvent)}
                 />
               </div>
               <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800">
                 <p className="font-medium mb-1">🔒 仅站点管理员可访问</p>
-                <p>普通用户请返回首页，使用学号登录即可发布、浏览商品。</p>
+                <p>普通用户请返回首页，使用邮箱登录即可发布、浏览商品。</p>
               </div>
               <Button type="submit" className="w-full h-11" disabled={loginLoading}>
                 {loginLoading ? '登录中...' : '登 录 后 台'}
@@ -300,6 +413,9 @@ export default function AdminPage() {
             {navItems.find((n) => n.key === activeTab)?.label}
           </h1>
           <div className="ml-auto flex items-center gap-2">
+            {dataLoading && (
+              <Loader2 className="size-4 animate-spin text-muted-foreground" />
+            )}
             <Badge variant="secondary" className="text-xs">
               v1.0.0
             </Badge>
@@ -381,7 +497,7 @@ export default function AdminPage() {
                               <TableCell className="font-medium">
                                 <div className="flex items-center gap-2">
                                   <Image
-                                    src={p.images[0]}
+                                    src={p.thumbs[0] || p.images[0]}
                                     alt=""
                                     className="size-8 rounded object-cover"
                                   />
@@ -509,7 +625,7 @@ export default function AdminPage() {
                             <TableCell>
                               <div className="flex items-center gap-2">
                                 <Image
-                                  src={p.images[0]}
+                                  src={p.thumbs[0] || p.images[0]}
                                   alt=""
                                   className="size-10 rounded object-cover shrink-0"
                                 />
@@ -557,23 +673,16 @@ export default function AdminPage() {
                               <div className="flex justify-end gap-1.5">
                                 {!p.is_top ? (
                                   <TopDialog
-                                    productId={p.id}
                                     productTitle={p.title}
-                                    onConfirm={(weight, days) => {
-                                      const expireAt = new Date();
-                                      expireAt.setDate(expireAt.getDate() + days);
-                                      setTop(p.id, true, weight, expireAt.toISOString().slice(0, 10));
-                                      toast.success(`已设置「${p.title}」为向阳位置顶`);
-                                    }}
+                                    onConfirm={(weight, days) =>
+                                      void handleTop(p.id, p.title, weight, days)
+                                    }
                                   />
                                 ) : (
                                   <Button
                                     variant="secondary"
                                     size="sm"
-                                    onClick={() => {
-                                      setTop(p.id, false);
-                                      toast.success('已取消置顶');
-                                    }}
+                                    onClick={() => void handleCancelTop(p.id)}
                                   >
                                     取消置顶
                                   </Button>
@@ -582,10 +691,7 @@ export default function AdminPage() {
                                   <Button
                                     variant="destructive"
                                     size="sm"
-                                    onClick={() => {
-                                      setProductStatus(p.id, 'offline');
-                                      toast.success('已下架商品');
-                                    }}
+                                    onClick={() => void handleProductStatus(p.id, 'offline')}
                                   >
                                     <EyeOff className="size-3.5 mr-1" />
                                     下架
@@ -593,10 +699,7 @@ export default function AdminPage() {
                                 ) : (
                                   <Button
                                     size="sm"
-                                    onClick={() => {
-                                      setProductStatus(p.id, 'on_sale');
-                                      toast.success('已上架商品');
-                                    }}
+                                    onClick={() => void handleProductStatus(p.id, 'on_sale')}
                                   >
                                     <Eye className="size-3.5 mr-1" />
                                     上架
@@ -626,9 +729,14 @@ export default function AdminPage() {
                     </CardDescription>
                   </div>
                   <AdDialog
-                    onSave={(data) => {
-                      addAd({ ...data, status: 'active' });
-                      toast.success('广告已创建并开始投放');
+                    onSave={async (data) => {
+                      try {
+                        await insertAd({ ...data, status: 'active' });
+                        await refreshAds();
+                        toast.success('广告已创建并开始投放');
+                      } catch {
+                        toast.error('创建失败，请稍后重试');
+                      }
                     }}
                   />
                 </CardHeader>
@@ -657,24 +765,34 @@ export default function AdminPage() {
                           广告位：{ad.slot_key} · {ad.start_at} ~ {ad.end_at}
                         </p>
                         <p className="text-xs text-muted-foreground mt-0.5">
-                          跳转链接：{ad.link}
+                          跳转链接:{ad.link}
                         </p>
                       </div>
                       <div className="flex gap-2 shrink-0">
                         <AdDialog
                           initial={ad}
-                          onSave={(data) => {
-                            updateAd(ad.id, data);
-                            toast.success('广告已更新');
+                          onSave={async (data) => {
+                            try {
+                              await updateAd(ad.id, data);
+                              await refreshAds();
+                              toast.success('广告已更新');
+                            } catch {
+                              toast.error('更新失败，请稍后重试');
+                            }
                           }}
                         />
                         {ad.status === 'active' ? (
                           <Button
                             variant="destructive"
                             size="sm"
-                            onClick={() => {
-                              setAdStatus(ad.id, 'inactive');
-                              toast.success('广告已停用');
+                            onClick={async () => {
+                              try {
+                                await setAdStatus(ad.id, 'inactive');
+                                await refreshAds();
+                                toast.success('广告已停用');
+                              } catch {
+                                toast.error('操作失败，请稍后重试');
+                              }
                             }}
                           >
                             停用
@@ -682,9 +800,14 @@ export default function AdminPage() {
                         ) : (
                           <Button
                             size="sm"
-                            onClick={() => {
-                              setAdStatus(ad.id, 'active');
-                              toast.success('广告已重新投放');
+                            onClick={async () => {
+                              try {
+                                await setAdStatus(ad.id, 'active');
+                                await refreshAds();
+                                toast.success('广告已重新投放');
+                              } catch {
+                                toast.error('操作失败，请稍后重试');
+                              }
                             }}
                           >
                             启用
@@ -711,7 +834,8 @@ export default function AdminPage() {
                         <TableHead className="whitespace-nowrap">认证状态</TableHead>
                         <TableHead className="whitespace-nowrap">信誉分</TableHead>
                         <TableHead className="whitespace-nowrap">交易次数</TableHead>
-                        <TableHead className="whitespace-nowrap text-right">违规记录</TableHead>
+                        <TableHead className="whitespace-nowrap">违规记录</TableHead>
+                        <TableHead className="whitespace-nowrap text-right">操作</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -725,10 +849,15 @@ export default function AdminPage() {
                                 className="size-8 rounded-full object-cover"
                               />
                               <span className="font-medium text-sm">{u.nickname}</span>
+                              {u.isAdmin && (
+                                <Badge className="bg-amber-500 hover:bg-amber-600 text-white border-0 text-[10px]">
+                                  管理员
+                                </Badge>
+                              )}
                             </div>
                           </TableCell>
                           <TableCell className="whitespace-nowrap tabular-nums">
-                            {u.studentId}
+                            {u.studentId || '—'}
                           </TableCell>
                           <TableCell className="whitespace-nowrap">
                             <Badge
@@ -744,13 +873,40 @@ export default function AdminPage() {
                           <TableCell className="whitespace-nowrap">
                             {u.tradeCount} 次交易
                           </TableCell>
-                          <TableCell className="text-right whitespace-nowrap">
+                          <TableCell className="whitespace-nowrap">
                             {u.reportCount > 0 ? (
                               <Badge variant="destructive" className="text-xs">
                                 被举报 {u.reportCount} 次
                               </Badge>
                             ) : (
                               <span className="text-xs text-muted-foreground">无违规</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-right whitespace-nowrap">
+                            {!u.isAdmin &&
+                              (u.isBanned ? (
+                                <Button
+                                  variant="secondary"
+                                  size="sm"
+                                  onClick={() => void handleBan(u, false)}
+                                >
+                                  <Undo2 className="size-3.5 mr-1" />
+                                  解封
+                                </Button>
+                              ) : (
+                                <Button
+                                  variant="destructive"
+                                  size="sm"
+                                  onClick={() => void handleBan(u, true)}
+                                >
+                                  <Ban className="size-3.5 mr-1" />
+                                  封禁
+                                </Button>
+                              ))}
+                            {u.isBanned && (
+                              <Badge variant="destructive" className="text-xs ml-1.5">
+                                已封禁
+                              </Badge>
                             )}
                           </TableCell>
                         </TableRow>
@@ -882,10 +1038,10 @@ export default function AdminPage() {
                                 placeholder="输入回复内容..."
                                 className="flex-1 rounded-lg border border-border/60 px-3 py-2 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-primary/30"
                                 onKeyDown={(e) =>
-                                  e.key === 'Enter' && handleReply(f.id)
+                                  e.key === 'Enter' && void handleReply(f.id)
                                 }
                               />
-                              <Button size="sm" onClick={() => handleReply(f.id)}>
+                              <Button size="sm" onClick={() => void handleReply(f.id)}>
                                 <Send className="size-3.5 mr-1" />
                                 回复
                               </Button>
@@ -908,7 +1064,7 @@ export default function AdminPage() {
 
           {/* 举报记录 */}
           {activeTab === 'reports' && (
-            <ReportsPanel />
+            <ReportsPanel reports={reports} onChanged={reloadReports} />
           )}
         </div>
       </div>
@@ -916,33 +1072,22 @@ export default function AdminPage() {
   );
 }
 
-function ReportsPanel() {
-  const [reports, setReports] = useState([
-    {
-      id: 1,
-      target: '某二手电脑商品',
-      reason: '虚假宣传，实物与图片不符',
-      reporter: '林小悦',
-      status: 'pending' as 'pending' | 'resolved',
-    },
-    {
-      id: 2,
-      target: '用户 陈学长',
-      reason: '交易后拉黑，未按时交货',
-      reporter: '王同学',
-      status: 'resolved' as 'pending' | 'resolved',
-    },
-  ]);
-
-  const toggleStatus = (id: number) => {
-    setReports((prev) =>
-      prev.map((r) => {
-        if (r.id !== id) return r;
-        const next = r.status === 'pending' ? 'resolved' : 'pending';
-        toast.success(next === 'resolved' ? '举报已标记为已处理' : '举报已重新打开');
-        return { ...r, status: next };
-      }),
-    );
+function ReportsPanel({
+  reports,
+  onChanged,
+}: {
+  reports: IReport[];
+  onChanged: () => void;
+}) {
+  const toggleStatus = async (r: IReport) => {
+    const next = r.status === 'open' ? 'resolved' : 'open';
+    try {
+      await setReportStatus(r.id, next);
+      toast.success(next === 'resolved' ? '举报已标记为已处理' : '举报已重新打开');
+      onChanged();
+    } catch {
+      toast.error('操作失败，请稍后重试');
+    }
   };
 
   return (
@@ -955,31 +1100,54 @@ function ReportsPanel() {
                         <TableHead className="whitespace-nowrap">举报对象</TableHead>
                         <TableHead className="whitespace-nowrap">举报原因</TableHead>
                         <TableHead className="whitespace-nowrap">举报人</TableHead>
+                        <TableHead className="whitespace-nowrap">时间</TableHead>
                         <TableHead className="whitespace-nowrap">状态</TableHead>
                         <TableHead className="whitespace-nowrap text-right">操作</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
+                      {reports.length === 0 && (
+                        <TableRow>
+                          <TableCell colSpan={6} className="text-center py-16 text-sm text-muted-foreground">
+                            暂无举报记录
+                          </TableCell>
+                        </TableRow>
+                      )}
                       {reports.map((r) => (
                         <TableRow key={r.id}>
-                          <TableCell className="font-medium">{r.target}</TableCell>
-                          <TableCell className="text-sm">{r.reason}</TableCell>
-                          <TableCell className="text-sm">{r.reporter}</TableCell>
+                          <TableCell className="font-medium">
+                            <div>
+                              {r.targetType === 'product' ? '商品' : '用户'}
+                              <span className="text-xs text-muted-foreground ml-1.5 font-normal">
+                                #{r.targetId.slice(0, 8)}
+                              </span>
+                            </div>
+                          </TableCell>
+                          <TableCell className="text-sm max-w-[240px]">
+                            <div>{r.reason}</div>
+                            {r.detail && (
+                              <div className="text-xs text-muted-foreground mt-0.5 line-clamp-2">
+                                {r.detail}
+                              </div>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-sm whitespace-nowrap">{r.reporterNickname}</TableCell>
+                          <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{r.createdAt}</TableCell>
                           <TableCell>
                             <Badge
-                              variant={r.status === 'pending' ? 'destructive' : 'default'}
+                              variant={r.status === 'open' ? 'destructive' : 'default'}
                               className="text-xs"
                             >
-                              {r.status === 'pending' ? '待处理' : '已处理'}
+                              {r.status === 'open' ? '待处理' : '已处理'}
                             </Badge>
                           </TableCell>
                           <TableCell className="text-right whitespace-nowrap">
                             <Button
                               variant="secondary"
                               size="sm"
-                              onClick={() => toggleStatus(r.id)}
+                              onClick={() => void toggleStatus(r)}
                             >
-                              {r.status === 'pending' ? '标记已处理' : '重新打开'}
+                              {r.status === 'open' ? '标记已处理' : '重新打开'}
                             </Button>
                           </TableCell>
                         </TableRow>
@@ -997,20 +1165,26 @@ function AdDialog({
   onSave,
 }: {
   initial?: IAd;
-  onSave: (data: Omit<IAd, 'id' | 'status'>) => void;
+  onSave: (data: Omit<IAd, 'id' | 'status'>) => Promise<void>;
 }) {
+  const { auth } = useApp();
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState('');
   const [imageUrl, setImageUrl] = useState('');
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState('');
   const [slotKey, setSlotKey] = useState('forest_goods_main');
   const [link, setLink] = useState('#');
   const [startAt, setStartAt] = useState('');
   const [endAt, setEndAt] = useState('');
+  const [saving, setSaving] = useState(false);
 
   const resetAndOpen = (next: boolean) => {
     if (next) {
       setTitle(initial?.title ?? '');
       setImageUrl(initial?.image_url ?? '');
+      setImageFile(null);
+      setImagePreview('');
       setSlotKey(initial?.slot_key ?? 'forest_goods_main');
       setLink(initial?.link ?? '#');
       setStartAt(initial?.start_at ?? new Date().toISOString().slice(0, 10));
@@ -1021,14 +1195,16 @@ function AdDialog({
 
   const handleImageFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
+    setImageFile(file);
     const reader = new FileReader();
-    reader.onload = () => setImageUrl(reader.result as string);
+    reader.onload = () => setImagePreview(reader.result as string);
     reader.readAsDataURL(file);
   };
 
-  const handleSave = () => {
-    if (!title.trim() || !imageUrl || !startAt || !endAt) {
+  const handleSave = async () => {
+    if (!title.trim() || (!imageUrl && !imageFile) || !startAt || !endAt) {
       toast.error('请填写广告名称、图片和投放时间');
       return;
     }
@@ -1036,16 +1212,30 @@ function AdDialog({
       toast.error('结束时间不能早于开始时间');
       return;
     }
-    onSave({
-      title: title.trim(),
-      image_url: imageUrl,
-      slot_key: slotKey,
-      link: link.trim() || '#',
-      start_at: startAt,
-      end_at: endAt,
-    });
-    setOpen(false);
+    setSaving(true);
+    try {
+      // 新选了图片 → 压缩上传到 Storage
+      let finalUrl = imageUrl;
+      if (imageFile) {
+        finalUrl = await uploadMiscImage(auth.userId, imageFile, 'ad');
+      }
+      await onSave({
+        title: title.trim(),
+        image_url: finalUrl,
+        slot_key: slotKey,
+        link: link.trim() || '#',
+        start_at: startAt,
+        end_at: endAt,
+      });
+      setOpen(false);
+    } catch {
+      toast.error('保存失败，请稍后重试');
+    } finally {
+      setSaving(false);
+    }
   };
+
+  const shownImage = imagePreview || imageUrl;
 
   return (
     <Dialog open={open} onOpenChange={resetAndOpen}>
@@ -1075,9 +1265,9 @@ function AdDialog({
           <div className="space-y-1.5">
             <label className="text-sm font-medium">广告图片</label>
             <div className="flex items-center gap-3">
-              {imageUrl ? (
+              {shownImage ? (
                 <Image
-                  src={imageUrl}
+                  src={shownImage}
                   alt=""
                   className="w-32 h-16 rounded-lg object-cover border border-border/60"
                 />
@@ -1123,7 +1313,9 @@ function AdDialog({
           <Button variant="secondary" onClick={() => setOpen(false)}>
             取消
           </Button>
-          <Button onClick={handleSave}>{initial ? '保存修改' : '创建并投放'}</Button>
+          <Button onClick={() => void handleSave()} disabled={saving}>
+            {saving ? '保存中...' : initial ? '保存修改' : '创建并投放'}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -1131,11 +1323,9 @@ function AdDialog({
 }
 
 function TopDialog({
-  productId,
   productTitle,
   onConfirm,
 }: {
-  productId: string;
   productTitle: string;
   onConfirm: (weight: number, days: number) => void;
 }) {

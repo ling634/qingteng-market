@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Search,
@@ -10,6 +10,7 @@ import {
   CheckCircle2,
   XCircle,
   X,
+  Loader2,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '@/components/ui/button';
@@ -37,10 +38,14 @@ import { useApp } from '@/context/AppContext';
 import { CATEGORIES } from '@/data/categories';
 import { toast } from 'sonner';
 import type { IWanted } from '@/data/wanted';
+import { supabase } from '@/lib/supabase';
+import { fetchWantedPage, insertWanted, getOrCreateConversation } from '@/lib/api';
+
+const PAGE_SIZE = 15;
 
 export default function WantedPage() {
   const navigate = useNavigate();
-  const { wanted, addWanted, auth } = useApp();
+  const { auth } = useApp();
   const [keyword, setKeyword] = useState('');
   const [category, setCategory] = useState('all');
   const [tab, setTab] = useState('all');
@@ -50,22 +55,78 @@ export default function WantedPage() {
   const [formBudget, setFormBudget] = useState('');
   const [formDesc, setFormDesc] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [contacting, setContacting] = useState<string | null>(null);
 
-  const filtered = useMemo(() => {
-    let list = wanted;
-    if (tab === 'open') list = list.filter((w) => w.status === 'open');
-    if (tab === 'closed') list = list.filter((w) => w.status === 'closed');
-    if (category !== 'all') list = list.filter((w) => w.category === category);
-    if (keyword.trim()) {
-      const kw = keyword.trim().toLowerCase();
-      list = list.filter(
-        (w) =>
-          w.title.toLowerCase().includes(kw) ||
-          w.description.toLowerCase().includes(kw),
-      );
-    }
-    return [...list].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  }, [wanted, tab, category, keyword]);
+  const [items, setItems] = useState<IWanted[]>([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [page, setPage] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [initialLoaded, setInitialLoaded] = useState(false);
+
+  const loadPage = useCallback(
+    async (pageIndex: number, append: boolean) => {
+      setLoading(true);
+      try {
+        const res = await fetchWantedPage({
+          tab,
+          category,
+          keyword,
+          page: pageIndex,
+          pageSize: PAGE_SIZE,
+        });
+        setItems((prev) => (append ? [...prev, ...res.items] : res.items));
+        setHasMore(res.hasMore);
+        setPage(pageIndex);
+      } catch {
+        // 网络异常保持旧数据
+      } finally {
+        setLoading(false);
+        setInitialLoaded(true);
+      }
+    },
+    [tab, category, keyword],
+  );
+
+  useEffect(() => {
+    void loadPage(0, false);
+  }, [loadPage]);
+
+  // Realtime：求购变化自动刷新（1s 防抖，单频道）
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const channel = supabase
+      .channel('wanted-changes')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'wanted' },
+        () => {
+          if (timerRef.current) clearTimeout(timerRef.current);
+          timerRef.current = setTimeout(() => void loadPage(0, false), 1000);
+        },
+      )
+      .subscribe();
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      void supabase.removeChannel(channel);
+    };
+  }, [loadPage]);
+
+  // 滚动到底加载更多
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && hasMore && !loading) {
+          void loadPage(page + 1, true);
+        }
+      },
+      { rootMargin: '200px' },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hasMore, loading, page, loadPage]);
 
   const handleSubmit = async () => {
     if (!auth.isLoggedIn) {
@@ -79,29 +140,50 @@ export default function WantedPage() {
       return;
     }
     setSubmitting(true);
-    await new Promise((r) => setTimeout(r, 600));
-    addWanted({
-      title: formTitle.trim(),
-      category: formCat,
-      budget: formBudget.trim(),
-      description: formDesc.trim(),
-    });
-    setSubmitting(false);
-    setDialogOpen(false);
-    setFormTitle('');
-    setFormBudget('');
-    setFormDesc('');
-    toast.success('求购发布成功！');
+    try {
+      await insertWanted(auth.userId, {
+        title: formTitle.trim(),
+        category: formCat,
+        budget: formBudget.trim(),
+        description: formDesc.trim(),
+      });
+      setDialogOpen(false);
+      setFormTitle('');
+      setFormBudget('');
+      setFormDesc('');
+      toast.success('求购发布成功！');
+      void loadPage(0, false);
+    } catch {
+      toast.error('发布失败，请稍后重试');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
-  const handleContact = (w: IWanted) => {
+  const handleContact = async (w: IWanted) => {
     if (!auth.isLoggedIn) {
       toast.error('请先登录');
       navigate('/profile');
       return;
     }
-    toast.success('已向求购者发送私信');
-    navigate('/messages');
+    if (w.buyerId === auth.userId) {
+      toast.info('这是你自己发布的求购');
+      return;
+    }
+    setContacting(w.id);
+    try {
+      const convId = await getOrCreateConversation(
+        null,
+        auth.userId,
+        w.buyerId,
+        `我有一条求购线索想和你聊聊「${w.title}」。请使用站内私信沟通，请勿添加微信/QQ，谨防诈骗。`,
+      );
+      navigate(`/messages?conv=${convId}`);
+    } catch {
+      toast.error('发起会话失败，请稍后重试');
+    } finally {
+      setContacting(null);
+    }
   };
 
   return (
@@ -250,7 +332,7 @@ export default function WantedPage() {
 
         {/* 列表 */}
         <AnimatePresence mode="wait">
-          {filtered.length > 0 ? (
+          {items.length > 0 ? (
             <motion.div
               key="list"
               initial={{ opacity: 0 }}
@@ -258,7 +340,7 @@ export default function WantedPage() {
               exit={{ opacity: 0 }}
               className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4"
             >
-              {filtered.map((w, i) => (
+              {items.map((w, i) => (
                 <motion.div
                   key={w.id}
                   initial={{ opacity: 0, y: 12 }}
@@ -310,16 +392,20 @@ export default function WantedPage() {
                       variant="secondary"
                       className="gap-1 text-xs"
                       onClick={() => handleContact(w)}
-                      disabled={w.status === 'closed'}
+                      disabled={w.status === 'closed' || contacting === w.id}
                     >
-                      <MessageSquare className="size-3.5" />
+                      {contacting === w.id ? (
+                        <Loader2 className="size-3.5 animate-spin" />
+                      ) : (
+                        <MessageSquare className="size-3.5" />
+                      )}
                       {w.status === 'open' ? '联系买家' : '已结束'}
                     </Button>
                   </div>
                 </motion.div>
               ))}
             </motion.div>
-          ) : (
+          ) : initialLoaded && !loading ? (
             <motion.div
               key="empty"
               initial={{ opacity: 0, y: 10 }}
@@ -337,8 +423,21 @@ export default function WantedPage() {
               </p>
               <Button onClick={() => setDialogOpen(true)}>我要求购</Button>
             </motion.div>
-          )}
+          ) : null}
         </AnimatePresence>
+
+        {/* 加载更多哨兵 */}
+        <div ref={sentinelRef} className="h-1" />
+        {loading && (
+          <div className="flex justify-center py-6 text-muted-foreground">
+            <Loader2 className="size-5 animate-spin" />
+          </div>
+        )}
+        {!hasMore && items.length > 0 && !loading && (
+          <p className="text-center text-xs text-muted-foreground py-6">
+            已经到底啦
+          </p>
+        )}
       </div>
     </div>
   );

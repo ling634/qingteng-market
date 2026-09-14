@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, type FormEvent } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback, type FormEvent } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import {
   Search,
@@ -6,7 +6,6 @@ import {
   Shield,
   ArrowLeft,
   MoreVertical,
-  X,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '@/components/ui/button';
@@ -14,66 +13,181 @@ import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Image } from '@/components/ui/image';
 import { useApp } from '@/context/AppContext';
-import { MOCK_CONVERSATIONS, type IConversation } from '@/data/messages';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
-import { MOCK_USERS } from '@/data/users';
+import { supabase } from '@/lib/supabase';
+import {
+  fetchConversations,
+  fetchMessages,
+  fetchProductById,
+  getOrCreateConversation,
+  markConversationRead,
+  sendMessage,
+  type IConversationItem,
+  type IChatMessage,
+} from '@/lib/api';
+
+function fmtMsgTime(iso: string): string {
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
 
 export default function MessagesPage() {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
-  const { getProductById, products } = useApp();
+  const { auth, authLoading } = useApp();
+  const myId = auth.userId;
 
-  // 本地会话状态
-  const [conversations, setConversations] =
-    useState<IConversation[]>(MOCK_CONVERSATIONS);
+  const [conversations, setConversations] = useState<IConversationItem[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<IChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [keyword, setKeyword] = useState('');
   const [showListMobile, setShowListMobile] = useState(true);
+  const [sending, setSending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // 从商品详情跳转来的话，创建或打开对应会话
-  useEffect(() => {
-    const productId = searchParams.get('product');
-    if (productId) {
-      const existing = conversations.find((c) => c.productId === productId);
-      if (existing) {
-        setActiveId(existing.id);
-        setShowListMobile(false);
-      } else {
-        const product = getProductById(productId);
-        if (product) {
-          const newConv: IConversation = {
-            id: `new_${productId}`,
-            productId,
-            participants: ['current_user', product.sellerId],
-            lastMessage: '开始聊聊这件商品吧~',
-            lastMessageAt: new Date().toLocaleString('zh-CN'),
-            unreadCount: 0,
-            messages: [
-              {
-                id: 'sys_1',
-                senderId: 'system',
-                content: `你正在咨询「${product.title}」，请使用站内私信沟通，请勿添加微信/QQ，谨防诈骗。`,
-                timestamp: new Date().toLocaleString('zh-CN'),
-                type: 'system',
-              },
-            ],
-          };
-          setConversations((prev) => [newConv, ...prev]);
-          setActiveId(newConv.id);
-          setShowListMobile(false);
-        }
-      }
-    } else if (conversations.length > 0 && !activeId) {
-      setActiveId(conversations[0].id);
+  const activeIdRef = useRef<string | null>(null);
+  activeIdRef.current = activeId;
+
+  const loadConversations = useCallback(async () => {
+    if (!myId) return;
+    try {
+      setConversations(await fetchConversations(myId));
+    } catch {
+      // 网络异常保持旧数据
     }
-  }, [searchParams, conversations, products]);
+  }, [myId]);
+
+  // 初始加载会话
+  useEffect(() => {
+    void loadConversations();
+  }, [loadConversations]);
+
+  // 从商品详情 / 求购页跳转：创建或打开会话
+  useEffect(() => {
+    if (!myId) return;
+    const productId = searchParams.get('product');
+    const convId = searchParams.get('conv');
+    if (!productId && !convId) return;
+
+    (async () => {
+      try {
+        let targetId = convId;
+        if (productId && !targetId) {
+          const res = await fetchProductById(productId);
+          if (!res) {
+            toast.error('商品不存在或已下架');
+            return;
+          }
+          if (res.product.sellerId === myId) {
+            toast.info('这是你自己发布的商品');
+            return;
+          }
+          targetId = await getOrCreateConversation(
+            productId,
+            myId,
+            res.product.sellerId,
+            `你正在咨询「${res.product.title}」，请使用站内私信沟通，请勿添加微信/QQ，谨防诈骗。`,
+          );
+        }
+        await loadConversations();
+        setActiveId(targetId);
+        setShowListMobile(false);
+      } catch {
+        toast.error('打开会话失败，请稍后重试');
+      } finally {
+        setSearchParams({}, { replace: true });
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [myId, searchParams]);
+
+  // 打开会话 → 加载消息 + 标记已读
+  useEffect(() => {
+    if (!activeId || !myId) return;
+    fetchMessages(activeId)
+      .then(setMessages)
+      .catch(() => {});
+    markConversationRead(activeId, myId).catch(() => {});
+    setConversations((prev) =>
+      prev.map((c) => (c.id === activeId ? { ...c, unreadCount: 0 } : c)),
+    );
+  }, [activeId, myId]);
+
+  // Realtime：单频道订阅新消息（RLS 保证只收到自己参与会话的消息）
+  useEffect(() => {
+    if (!myId) return;
+    const channel = supabase
+      .channel(`messages-${myId}`)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'messages' },
+        (payload) => {
+          const row = payload.new as {
+            id: string;
+            conversation_id: string;
+            sender_id: string;
+            content: string;
+            type: 'text' | 'system';
+            read_at: string | null;
+            created_at: string;
+          };
+          const msg: IChatMessage = {
+            id: row.id,
+            conversationId: row.conversation_id,
+            senderId: row.sender_id,
+            content: row.content,
+            type: row.type,
+            readAt: row.read_at,
+            createdAt: row.created_at,
+          };
+          // 当前打开的会话 → 直接上屏并标记已读（按 id 去重，自己发的消息已通过接口返回上屏）
+          if (row.conversation_id === activeIdRef.current) {
+            setMessages((prev) =>
+              prev.some((m) => m.id === msg.id) ? prev : [...prev, msg],
+            );
+            if (row.sender_id !== myId) {
+              markConversationRead(row.conversation_id, myId).catch(() => {});
+            }
+          }
+          // 更新会话列表（最后一条消息 + 未读）
+          setConversations((prev) => {
+            const exists = prev.some((c) => c.id === row.conversation_id);
+            if (!exists) {
+              // 新会话（对方首次发起）→ 重新拉取列表
+              void loadConversations();
+              return prev;
+            }
+            return prev
+              .map((c) =>
+                c.id === row.conversation_id
+                  ? {
+                      ...c,
+                      lastMessage: row.content.slice(0, 100),
+                      lastMessageAt: row.created_at,
+                      unreadCount:
+                        row.conversation_id === activeIdRef.current ||
+                        row.sender_id === myId
+                          ? c.unreadCount
+                          : c.unreadCount + 1,
+                    }
+                  : c,
+              )
+              .sort((a, b) => b.lastMessageAt.localeCompare(a.lastMessageAt));
+          });
+        },
+      )
+      .subscribe();
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [myId, loadConversations]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [activeId, conversations]);
+  }, [messages]);
 
   const activeConv = useMemo(
     () => conversations.find((c) => c.id === activeId) || null,
@@ -86,113 +200,54 @@ export default function MessagesPage() {
     return conversations.filter(
       (c) =>
         c.lastMessage.toLowerCase().includes(kw) ||
-        getOtherNickname(c).toLowerCase().includes(kw),
+        c.otherNickname.toLowerCase().includes(kw),
     );
   }, [conversations, keyword]);
 
-  function getOtherUserId(conv: IConversation) {
-    return conv.participants.find((p) => p !== 'current_user') || '';
-  }
+  const totalUnread = conversations.reduce((sum, c) => sum + (c.unreadCount > 0 ? 1 : 0), 0);
 
-  function getOtherNickname(conv: IConversation) {
-    const otherId = getOtherUserId(conv);
-    const user = MOCK_USERS.find((u) => u.id === otherId);
-    if (user) return user.nickname;
-    // 从 mock data 里找 seller
-    const p = products.find((pr) => pr.sellerId === otherId);
-    return p?.sellerNickname || '同学';
-  }
-
-  function getOtherAvatar(conv: IConversation) {
-    const otherId = getOtherUserId(conv);
-    const user = MOCK_USERS.find((u) => u.id === otherId);
-    if (user) return user.avatar;
-    const p = products.find((pr) => pr.sellerId === otherId);
-    return p?.sellerAvatar || MOCK_USERS[0].avatar;
-  }
-
-  function getOtherVerified(conv: IConversation) {
-    const otherId = getOtherUserId(conv);
-    return MOCK_USERS.find((u) => u.id === otherId)?.verified ?? false;
-  }
-
-  const handleSend = (e: FormEvent) => {
+  const handleSend = async (e: FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || !activeId) return;
-    const msg = input.trim();
+    const content = input.trim();
+    if (!content || !activeId || !myId || sending) return;
     setInput('');
-    setConversations((prev) =>
-      prev.map((c) =>
-        c.id === activeId
-          ? {
-              ...c,
-              lastMessage: msg,
-              lastMessageAt: new Date().toLocaleTimeString('zh-CN', {
-                hour: '2-digit',
-                minute: '2-digit',
-              }),
-              messages: [
-                ...c.messages,
-                {
-                  id: `m_${Date.now()}`,
-                  senderId: 'current_user',
-                  content: msg,
-                  timestamp: new Date().toLocaleTimeString('zh-CN', {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                  }),
-                  type: 'text',
-                },
-              ],
-              unreadCount: 0,
-            }
-          : c,
-      ),
-    );
-
-    // 模拟对方回复
-    setTimeout(() => {
-      const replies = [
-        '好的，没问题~',
-        '可以的，什么时候方便自提？',
-        '好嘞，给你留着',
-        '嗯嗯，行',
-        '收到，那我们约个时间吧',
-      ];
-      const reply = replies[Math.floor(Math.random() * replies.length)];
-      setConversations((prev) =>
-        prev.map((c) =>
-          c.id === activeId
-            ? {
-                ...c,
-                lastMessage: reply,
-                lastMessageAt: new Date().toLocaleTimeString('zh-CN', {
-                  hour: '2-digit',
-                  minute: '2-digit',
-                }),
-                messages: [
-                  ...c.messages,
-                  {
-                    id: `m_${Date.now()}_r`,
-                    senderId: getOtherUserId(c),
-                    content: reply,
-                    timestamp: new Date().toLocaleTimeString('zh-CN', {
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    }),
-                    type: 'text',
-                  },
-                ],
-              }
-            : c,
-        ),
+    setSending(true);
+    try {
+      const msg = await sendMessage(activeId, myId, content);
+      setMessages((prev) =>
+        prev.some((m) => m.id === msg.id) ? prev : [...prev, msg],
       );
-    }, 1000 + Math.random() * 1000);
+      setConversations((prev) =>
+        prev
+          .map((c) =>
+            c.id === activeId
+              ? { ...c, lastMessage: content.slice(0, 100), lastMessageAt: msg.createdAt }
+              : c,
+          )
+          .sort((a, b) => b.lastMessageAt.localeCompare(a.lastMessageAt)),
+      );
+    } catch {
+      toast.error('发送失败，请稍后重试');
+      setInput(content);
+    } finally {
+      setSending(false);
+    }
   };
 
-  const relatedProduct = activeConv?.productId
-    ? getProductById(activeConv.productId)
-    : null;
+  if (!authLoading && !auth.isLoggedIn) {
+    return (
+      <div className="min-h-screen bg-background flex flex-col items-center justify-center text-center px-4">
+        <div className="size-16 rounded-full bg-muted flex items-center justify-center mb-4">
+          <Send className="size-7 text-muted-foreground" />
+        </div>
+        <h3 className="text-base font-medium mb-1">请先登录</h3>
+        <p className="text-sm text-muted-foreground mb-4">
+          登录后可使用站内私信与同学沟通
+        </p>
+        <Button onClick={() => navigate('/profile')}>去登录</Button>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -209,7 +264,7 @@ export default function MessagesPage() {
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-lg font-bold">消息</h2>
               <Badge variant="secondary" className="text-xs">
-                {conversations.filter((c) => c.unreadCount > 0).length} 条未读
+                {totalUnread} 条未读
               </Badge>
             </div>
             <div className="relative">
@@ -231,12 +286,6 @@ export default function MessagesPage() {
                   onClick={() => {
                     setActiveId(conv.id);
                     setShowListMobile(false);
-                    // 标记已读
-                    setConversations((prev) =>
-                      prev.map((c) =>
-                        c.id === conv.id ? { ...c, unreadCount: 0 } : c,
-                      ),
-                    );
                   }}
                   className={cn(
                     'w-full flex items-center gap-3 p-3 border-b border-border/40 text-left transition-colors',
@@ -247,7 +296,7 @@ export default function MessagesPage() {
                 >
                   <div className="relative shrink-0">
                     <Image
-                      src={getOtherAvatar(conv)}
+                      src={conv.otherAvatar}
                       alt=""
                       className="size-11 rounded-full object-cover"
                     />
@@ -260,10 +309,10 @@ export default function MessagesPage() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between">
                       <span className="font-medium text-sm truncate">
-                        {getOtherNickname(conv)}
+                        {conv.otherNickname}
                       </span>
                       <span className="text-[10px] text-muted-foreground shrink-0 ml-2">
-                        {conv.lastMessageAt.split(' ')[1] || conv.lastMessageAt}
+                        {fmtMsgTime(conv.lastMessageAt)}
                       </span>
                     </div>
                     <p className="text-xs text-muted-foreground truncate mt-0.5">
@@ -274,7 +323,7 @@ export default function MessagesPage() {
               ))
             ) : (
               <div className="p-8 text-center text-sm text-muted-foreground">
-                没有找到会话
+                {keyword ? '没有找到会话' : '还没有会话，去商品详情页私信卖家吧'}
               </div>
             )}
           </div>
@@ -300,16 +349,16 @@ export default function MessagesPage() {
                   <ArrowLeft className="size-4" />
                 </Button>
                 <Image
-                  src={getOtherAvatar(activeConv)}
+                  src={activeConv.otherAvatar}
                   alt=""
                   className="size-9 rounded-full object-cover"
                 />
                 <div className="flex-1 min-w-0">
                   <div className="font-medium text-sm truncate">
-                    {getOtherNickname(activeConv)}
+                    {activeConv.otherNickname}
                   </div>
                   <div className="text-xs text-muted-foreground">
-                    {getOtherVerified(activeConv) ? '✓ 已认证学生' : '未认证'}
+                    {activeConv.otherVerified ? '✓ 已认证学生' : '未认证'}
                   </div>
                 </div>
                 <Button variant="ghost" size="icon" className="size-8">
@@ -318,22 +367,24 @@ export default function MessagesPage() {
               </div>
 
               {/* 关联商品卡片 */}
-              {relatedProduct && (
+              {activeConv.product && (
                 <div
-                  onClick={() => navigate(`/products/${relatedProduct.id}`)}
+                  onClick={() => navigate(`/products/${activeConv.product!.id}`)}
                   className="mx-4 my-3 p-3 bg-primary/5 border border-primary/20 rounded-xl flex items-center gap-3 cursor-pointer hover:bg-primary/10 transition-colors"
                 >
-                  <Image
-                    src={relatedProduct.images[0]}
-                    alt=""
-                    className="size-14 rounded-lg object-cover shrink-0"
-                  />
+                  {activeConv.product.image && (
+                    <Image
+                      src={activeConv.product.image}
+                      alt=""
+                      className="size-14 rounded-lg object-cover shrink-0"
+                    />
+                  )}
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-foreground truncate">
-                      {relatedProduct.title}
+                      {activeConv.product.title}
                     </p>
                     <p className="text-primary font-semibold text-sm">
-                      ¥{relatedProduct.price}
+                      ¥{activeConv.product.price}
                     </p>
                   </div>
                   <Badge variant="secondary" className="text-xs shrink-0">
@@ -354,10 +405,9 @@ export default function MessagesPage() {
               {/* 消息列表 */}
               <div className="flex-1 overflow-y-auto px-4 py-2 space-y-3 bg-gradient-to-b from-muted/20 to-transparent">
                 <AnimatePresence>
-                  {activeConv.messages.map((msg, i) => {
-                    const isMe = msg.senderId === 'current_user';
-                    const isSys = msg.type === 'system';
-                    if (isSys) {
+                  {messages.map((msg) => {
+                    const isMe = msg.senderId === myId;
+                    if (msg.type === 'system') {
                       return (
                         <motion.div
                           key={msg.id}
@@ -366,7 +416,7 @@ export default function MessagesPage() {
                           transition={{ duration: 0.3 }}
                           className="flex justify-center"
                         >
-                          <div className="text-[11px] text-muted-foreground bg-muted px-3 py-1 rounded-full">
+                          <div className="text-[11px] text-muted-foreground bg-muted px-3 py-1 rounded-full max-w-[90%] text-center">
                             {msg.content}
                           </div>
                         </motion.div>
@@ -377,7 +427,7 @@ export default function MessagesPage() {
                         key={msg.id}
                         initial={{ opacity: 0, y: 8 }}
                         animate={{ opacity: 1, y: 0 }}
-                        transition={{ duration: 0.25, delay: i * 0.02 }}
+                        transition={{ duration: 0.25 }}
                         className={cn(
                           'flex gap-2',
                           isMe ? 'justify-end' : 'justify-start',
@@ -385,7 +435,7 @@ export default function MessagesPage() {
                       >
                         {!isMe && (
                           <Image
-                            src={getOtherAvatar(activeConv)}
+                            src={activeConv.otherAvatar}
                             alt=""
                             className="size-7 rounded-full object-cover shrink-0 self-end"
                           />
@@ -409,7 +459,7 @@ export default function MessagesPage() {
                                 : 'text-muted-foreground',
                             )}
                           >
-                            {msg.timestamp}
+                            {fmtMsgTime(msg.createdAt)}
                           </div>
                         </div>
                       </motion.div>
@@ -433,7 +483,7 @@ export default function MessagesPage() {
                 <Button
                   type="submit"
                   size="icon"
-                  disabled={!input.trim()}
+                  disabled={!input.trim() || sending}
                   className="size-10 rounded-full shrink-0"
                 >
                   <Send className="size-4" />

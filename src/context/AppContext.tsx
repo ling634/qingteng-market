@@ -1,42 +1,38 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { MOCK_PRODUCTS, type IProduct } from '@/data/products';
-import { MOCK_ADS, type IAd } from '@/data/ads';
-import { MOCK_WANTED, type IWanted } from '@/data/wanted';
-import { readJSON, writeJSON } from '@/lib/storage';
-import { MOCK_USERS, type IUser } from '@/data/users';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react';
+import { supabase } from '@/lib/supabase';
+import {
+  DEFAULT_AVATAR,
+  addFavorite,
+  checkRegistration,
+  fetchAds,
+  fetchFavoriteIds,
+  fetchMyProfile,
+  removeFavorite,
+  updateAvatarUrl,
+  updateNickname as apiUpdateNickname,
+} from '@/lib/api';
+import { uploadAvatar } from '@/lib/image';
+import type { IAd } from '@/data/ads';
 import { toast } from 'sonner';
 
-interface AuthState {
+export interface AuthState {
   isLoggedIn: boolean;
   userId: string;
   studentId: string;
   nickname: string;
   avatar: string;
+  email: string;
   verified: boolean;
   isAdmin: boolean;
-}
-
-export interface IFeedback {
-  id: string;
-  userId: string;
-  userNickname: string;
-  userStudentId: string;
-  userAvatar: string;
-  content: string;
-  image?: string;
-  status: 'pending' | 'replied';
-  replyContent?: string;
-  replyAt?: string;
-  createdAt: string;
-  messages: IFeedbackMessage[];
-}
-
-export interface IFeedbackMessage {
-  id: string;
-  sender: 'user' | 'admin';
-  content: string;
-  image?: string;
-  timestamp: string;
+  isBanned: boolean;
 }
 
 const DEFAULT_AUTH: AuthState = {
@@ -45,352 +41,299 @@ const DEFAULT_AUTH: AuthState = {
   studentId: '',
   nickname: '',
   avatar: '',
+  email: '',
   verified: false,
   isAdmin: false,
+  isBanned: false,
 };
 
-const ADMIN_USERNAME = 'admin';
-const ADMIN_PASSWORD = 'QT6360zsn**';
+export interface RegisterInfo {
+  email: string;
+  password: string;
+  studentId: string;
+  nickname: string;
+  college: string;
+  name: string;
+}
 
 interface AppContextValue {
-  products: IProduct[];
-  ads: IAd[];
-  wanted: IWanted[];
-  users: IUser[];
-  favorites: string[];
   auth: AuthState;
-  feedbacks: IFeedback[];
-  toggleFavorite: (id: string) => void;
+  /** 首次会话恢复中（刷新页面时短暂为 true） */
+  authLoading: boolean;
+  ads: IAd[];
+  refreshAds: () => Promise<void>;
+  favorites: string[];
   isFavorite: (id: string) => boolean;
-  addProduct: (p: Omit<IProduct, 'id' | 'createdAt' | 'status' | 'sellerId' | 'sellerNickname' | 'sellerAvatar' | 'is_top' | 'top_expire_at' | 'top_weight'>) => void;
-  addWanted: (w: Omit<IWanted, 'id' | 'buyerId' | 'status' | 'createdAt'>) => void;
-  setTop: (id: string, top: boolean, weight?: number, expireAt?: string | null) => void;
-  setProductStatus: (id: string, status: IProduct['status']) => void;
-  addAd: (ad: Omit<IAd, 'id'>) => void;
-  updateAd: (id: string, patch: Partial<Omit<IAd, 'id'>>) => void;
-  setAdStatus: (id: string, status: IAd['status']) => void;
-  /** 修改当前用户昵称（昵称不可与其他用户重复），返回是否成功 */
-  updateNickname: (nickname: string) => boolean;
-  /** 修改当前用户头像 */
-  updateAvatar: (avatar: string) => void;
-  /** 普通用户学号登录（开放注册：不存在自动注册） */
-  login: (studentId: string) => boolean;
-  /** 注册账号，返回 null 表示成功，否则为失败原因 */
-  register: (info: { studentId: string; nickname: string; college: string; name: string }) => string | null;
-  /** 管理员账号密码登录 */
-  adminLogin: (username: string, password: string) => boolean;
-  logout: () => void;
-  getProductById: (id: string) => IProduct | undefined;
-  getUserById: (id: string) => IUser | undefined;
-  /** 提交意见反馈 */
-  submitFeedback: (content: string, image?: string) => { success: boolean; message?: string; feedbackId?: string };
-  /** 管理员回复反馈 */
-  replyFeedback: (id: string, reply: string) => void;
-  /** 用户继续追加消息 */
-  appendFeedbackMessage: (id: string, content: string, image?: string) => void;
-  /** 获取当前用户的所有反馈 */
-  getMyFeedbacks: () => IFeedback[];
+  toggleFavorite: (id: string) => Promise<void>;
+  /** 邮箱 + 密码登录，返回 null 表示成功，否则为失败原因 */
+  login: (email: string, password: string) => Promise<string | null>;
+  /** 管理员登录（邮箱 + 密码，校验 is_admin），返回 null 表示成功 */
+  adminLogin: (email: string, password: string) => Promise<string | null>;
+  /** 注册，返回 null 表示成功，否则为失败原因 */
+  register: (info: RegisterInfo) => Promise<string | null>;
+  logout: () => Promise<void>;
+  /** 修改昵称（全站唯一），返回 true 或失败原因 */
+  updateNickname: (nickname: string) => Promise<true | string>;
+  /** 从相册上传新头像 */
+  updateAvatar: (file: File) => Promise<boolean>;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
 
 export function AppProvider({ children }: { children: ReactNode }) {
-  const [products, setProducts] = useState<IProduct[]>(() =>
-    readJSON<IProduct[]>('products', MOCK_PRODUCTS),
-  );
-  const [ads, setAds] = useState<IAd[]>(() => readJSON<IAd[]>('ads', MOCK_ADS));
-  const [wanted, setWanted] = useState<IWanted[]>(() =>
-    readJSON<IWanted[]>('wanted', MOCK_WANTED),
-  );
-  const [favorites, setFavorites] = useState<string[]>(() =>
-    readJSON<string[]>('favorites', []),
-  );
-  const [auth, setAuth] = useState<AuthState>(() =>
-    readJSON<AuthState>('auth', DEFAULT_AUTH),
-  );
-  const [users, setUsers] = useState<IUser[]>(() =>
-    readJSON<IUser[]>('users_list', MOCK_USERS),
-  );
-  const [feedbacks, setFeedbacks] = useState<IFeedback[]>(() =>
-    readJSON<IFeedback[]>('feedbacks', []),
-  );
+  const [auth, setAuth] = useState<AuthState>(DEFAULT_AUTH);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [ads, setAds] = useState<IAd[]>([]);
+  const [favorites, setFavorites] = useState<string[]>([]);
 
-  useEffect(() => { writeJSON('products', products); }, [products]);
-  useEffect(() => { writeJSON('ads', ads); }, [ads]);
-  useEffect(() => { writeJSON('wanted', wanted); }, [wanted]);
-  useEffect(() => { writeJSON('favorites', favorites); }, [favorites]);
-  useEffect(() => { writeJSON('auth', auth); }, [auth]);
-  useEffect(() => { writeJSON('users_list', users); }, [users]);
-  useEffect(() => { writeJSON('feedbacks', feedbacks); }, [feedbacks]);
-
-  const toggleFavorite = (id: string) => {
-    setFavorites((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
-    );
-  };
-  const isFavorite = (id: string) => favorites.includes(id);
-
-  const addProduct = (p: Omit<IProduct, 'id' | 'createdAt' | 'status' | 'sellerId' | 'sellerNickname' | 'sellerAvatar' | 'is_top' | 'top_expire_at' | 'top_weight'>) => {
-    const newProduct: IProduct = {
-      ...p,
-      id: `p_${Date.now()}`,
-      createdAt: new Date().toISOString().slice(0, 10),
-      status: 'on_sale',
-      sellerId: auth.userId || 'guest',
-      sellerNickname: auth.nickname || '匿名用户',
-      sellerAvatar: auth.avatar || MOCK_USERS[0].avatar,
-      is_top: false,
-      top_expire_at: null,
-      top_weight: 0,
-    };
-    setProducts((prev) => [newProduct, ...prev]);
-  };
-
-  const addWanted = (w: Omit<IWanted, 'id' | 'buyerId' | 'status' | 'createdAt'>) => {
-    const newWanted: IWanted = {
-      ...w,
-      id: `w_${Date.now()}`,
-      buyerId: auth.userId || 'guest',
-      status: 'open',
-      createdAt: new Date().toLocaleString('zh-CN'),
-    };
-    setWanted((prev) => [newWanted, ...prev]);
-  };
-
-  const setTop = (id: string, top: boolean, weight = 50, expireAt: string | null = null) => {
-    setProducts((prev) =>
-      prev.map((p) =>
-        p.id === id
-          ? { ...p, is_top: top, top_weight: top ? weight : 0, top_expire_at: top ? expireAt : null }
-          : p,
-      ),
-    );
-  };
-
-  const setProductStatus = (id: string, status: IProduct['status']) => {
-    setProducts((prev) => prev.map((p) => (p.id === id ? { ...p, status } : p)));
-  };
-
-  const addAd = (ad: Omit<IAd, 'id'>) => {
-    const newAd: IAd = { ...ad, id: `ad_${Date.now()}` };
-    setAds((prev) => [...prev, newAd]);
-  };
-
-  const updateAd = (id: string, patch: Partial<Omit<IAd, 'id'>>) => {
-    setAds((prev) => prev.map((a) => (a.id === id ? { ...a, ...patch } : a)));
-  };
-
-  const setAdStatus = (id: string, status: IAd['status']) => {
-    setAds((prev) => prev.map((a) => (a.id === id ? { ...a, status } : a)));
-  };
-
-  const updateNickname = (nickname: string): boolean => {
-    const trimmed = nickname.trim();
-    if (!trimmed) return false;
-    // 昵称不可与其他用户重复
-    if (users.some((u) => u.id !== auth.userId && u.nickname === trimmed)) return false;
-    setAuth((prev) => (prev.isLoggedIn ? { ...prev, nickname: trimmed } : prev));
-    setUsers((prev) =>
-      prev.map((u) => (u.id === auth.userId ? { ...u, nickname: trimmed } : u)),
-    );
-    return true;
-  };
-
-  const updateAvatar = (avatar: string) => {
-    if (!avatar) return;
-    setAuth((prev) => (prev.isLoggedIn ? { ...prev, avatar } : prev));
-    setUsers((prev) =>
-      prev.map((u) => (u.id === auth.userId ? { ...u, avatar } : u)),
-    );
-  };
-
-  const register = (info: { studentId: string; nickname: string; college: string; name: string }): string | null => {
-    if (users.some((u) => u.studentId === info.studentId)) return '该学号已注册，请直接登录';
-    if (users.some((u) => u.nickname === info.nickname.trim())) return '该昵称已被使用，请换一个';
-    const newUser: IUser = {
-      id: `u_${Date.now()}`,
-      studentId: info.studentId,
-      nickname: info.nickname.trim(),
-      avatar: 'https://lf3-static.bytednsdoc.com/obj/eden-cn/ylcylz_fsph_ryhs/ljhwZthlaukjlkulzlp/feisuda/avatar/base/9.jpg',
-      verified: false,
-      reputationTags: ['新用户'],
-      reportCount: 0,
-      tradeCount: 0,
-      rating: 5.0,
-    };
-    setUsers((prev) => [...prev, newUser]);
-    // 自动登录
-    setAuth({
-      isLoggedIn: true,
-      userId: newUser.id,
-      studentId: newUser.studentId,
-      nickname: newUser.nickname,
-      avatar: newUser.avatar,
-      verified: false,
-      isAdmin: false,
-    });
-    return null;
-  };
-
-  const login = (studentId: string): boolean => {
-    const user = users.find((u) => u.studentId === studentId);
-    if (!user) return false;
-    setAuth({
-      isLoggedIn: true,
-      userId: user.id,
-      studentId: user.studentId,
-      nickname: user.nickname,
-      avatar: user.avatar,
-      verified: user.verified,
-      isAdmin: false,
-    });
-    return true;
-  };
-
-  const adminLogin = (username: string, password: string): boolean => {
-    if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
+  const loadProfile = useCallback(async (userId: string) => {
+    try {
+      const profile = await fetchMyProfile(userId);
+      if (!profile) {
+        setAuth(DEFAULT_AUTH);
+        setFavorites([]);
+        return;
+      }
       setAuth({
         isLoggedIn: true,
-        userId: 'admin',
-        studentId: 'admin',
-        nickname: '站点管理员',
-        avatar: 'https://lf3-static.bytednsdoc.com/obj/eden-cn/ylcylz_fsph_ryhs/ljhwZthlaukjlkulzlp/feisuda/avatar/base/7.jpg',
-        verified: true,
-        isAdmin: true,
+        userId: profile.id,
+        studentId: profile.studentId,
+        nickname: profile.nickname,
+        avatar: profile.avatar,
+        email: profile.email,
+        verified: profile.verified,
+        isAdmin: profile.isAdmin,
+        isBanned: profile.isBanned,
       });
-      return true;
+      const favIds = await fetchFavoriteIds(userId);
+      setFavorites(favIds);
+    } catch {
+      // 网络异常时保持当前状态
+    } finally {
+      setAuthLoading(false);
     }
-    return false;
-  };
+  }, []);
 
-  const logout = () => {
-    setAuth(DEFAULT_AUTH);
-  };
+  // 会话恢复 + 登录状态监听
+  useEffect(() => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
+      // 回调内不能直接 await supabase 请求（可能死锁），延后执行
+      setTimeout(() => {
+        if (session?.user) {
+          void loadProfile(session.user.id);
+        } else {
+          setAuth(DEFAULT_AUTH);
+          setFavorites([]);
+          setAuthLoading(false);
+        }
+      }, 0);
+    });
+    return () => sub.subscription.unsubscribe();
+  }, [loadProfile]);
 
-  const getProductById = (id: string) => products.find((p) => p.id === id);
-  const getUserById = (id: string) => users.find((u) => u.id === id) || MOCK_USERS.find((u) => u.id === id);
-
-  const submitFeedback = (content: string, image?: string) => {
-    if (!auth.isLoggedIn) return { success: false, message: '请先登录' };
-    // 同一用户同时只能有 1 条「待回复」的反馈
-    const hasPending = feedbacks.some(
-      (f) => f.userId === auth.userId && f.status === 'pending',
-    );
-    if (hasPending) {
-      return {
-        success: false,
-        message: '您有一条反馈正在处理中，请等待管理员回复后再提交新反馈',
-      };
+  const refreshAds = useCallback(async () => {
+    try {
+      setAds(await fetchAds());
+    } catch {
+      // 忽略，保持旧数据
     }
-    const now = new Date().toLocaleString('zh-CN');
-    const newFeedback: IFeedback = {
-      id: `fb_${Date.now()}`,
-      userId: auth.userId,
-      userNickname: auth.nickname,
-      userStudentId: auth.studentId,
-      userAvatar: auth.avatar,
-      content,
-      image,
-      status: 'pending',
-      createdAt: now,
-      messages: [
-        {
-          id: `msg_${Date.now()}`,
-          sender: 'user',
-          content,
-          image,
-          timestamp: now,
-        },
-      ],
-    };
-    setFeedbacks((prev) => [newFeedback, ...prev]);
-    return { success: true, feedbackId: newFeedback.id };
-  };
+  }, []);
 
-  const replyFeedback = (id: string, reply: string) => {
-    const now = new Date().toLocaleString('zh-CN');
-    setFeedbacks((prev) =>
-      prev.map((f) =>
-        f.id === id
-          ? {
-              ...f,
-              status: 'replied',
-              replyContent: reply,
-              replyAt: now,
-              messages: [
-                ...f.messages,
-                {
-                  id: `msg_${Date.now()}`,
-                  sender: 'admin',
-                  content: reply,
-                  timestamp: now,
-                },
-              ],
-            }
-          : f,
-      ),
-    );
-  };
+  useEffect(() => {
+    void refreshAds();
+  }, [refreshAds]);
 
-  const appendFeedbackMessage = (id: string, content: string, image?: string) => {
-    const now = new Date().toLocaleString('zh-CN');
-    setFeedbacks((prev) =>
-      prev.map((f) =>
-        f.id === id && f.status === 'replied'
-          ? {
-              ...f,
-              status: 'pending',
-              messages: [
-                ...f.messages,
-                {
-                  id: `msg_${Date.now()}`,
-                  sender: 'user',
-                  content,
-                  image,
-                  timestamp: now,
-                },
-              ],
-            }
-          : f,
-      ),
-    );
-  };
+  // ---------- 认证 ----------
 
-  const getMyFeedbacks = () =>
-    feedbacks.filter((f) => f.userId === auth.userId);
+  const login = useCallback(
+    async (email: string, password: string): Promise<string | null> => {
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+      if (error) return '邮箱或密码不正确';
+      return null; // onAuthStateChange 会自动加载资料
+    },
+    [],
+  );
+
+  const adminLogin = useCallback(
+    async (email: string, password: string): Promise<string | null> => {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+      if (error) return '邮箱或密码不正确';
+      const profile = await fetchMyProfile(data.user.id);
+      if (!profile?.isAdmin) {
+        await supabase.auth.signOut();
+        return '该账号没有管理员权限';
+      }
+      return null;
+    },
+    [],
+  );
+
+  const register = useCallback(
+    async (info: RegisterInfo): Promise<string | null> => {
+      const nickname = info.nickname.trim();
+      // 注册前可用性检查（RPC）
+      const { nicknameTaken, studentIdTaken } = await checkRegistration(
+        nickname,
+        info.studentId,
+      );
+      if (nicknameTaken) return '该昵称已被使用，请换一个';
+      if (studentIdTaken) return '该学号已注册，请直接登录';
+
+      const { data, error } = await supabase.auth.signUp({
+        email: info.email,
+        password: info.password,
+      });
+      if (error) {
+        console.error('[register] signUp error:', error);
+        if (error.message.toLowerCase().includes('already')) {
+          return '该邮箱已注册，请直接登录';
+        }
+        if (error.message.toLowerCase().includes('rate limit')) {
+          return '发送验证邮件过于频繁，请在 Supabase 关闭邮箱验证后重试';
+        }
+        return `注册失败：${error.message}`;
+      }
+      const uid = data.user?.id;
+      if (!uid) return '注册失败，请稍后重试';
+
+      // signUp 后没有 session = 项目开启了邮箱验证，后续写库会因未登录被 RLS 拦截
+      if (!data.session) {
+        console.error('[register] no session after signUp (email confirm ON)');
+        return '项目开启了邮箱验证，请先在 Supabase 关闭 Confirm email（Authentication → Sign In / Providers → Email）';
+      }
+
+      // 写入公开资料 + 隐私资料（邮箱验证已关闭，signUp 后即处于登录态）
+      const { error: pErr } = await supabase.from('profiles').insert({
+        id: uid,
+        nickname,
+        college: info.college.trim(),
+        avatar_url: DEFAULT_AVATAR,
+      });
+      if (pErr) {
+        console.error('[register] profiles insert error:', pErr);
+        if (pErr.code === '23505') return '该昵称已被使用，请换一个';
+        return '资料写入失败，请稍后重试';
+      }
+      const { error: vErr } = await supabase.from('profile_private').insert({
+        user_id: uid,
+        student_id: info.studentId,
+        name: info.name.trim(),
+        email: info.email,
+      });
+      if (vErr) {
+        console.error('[register] profile_private insert error:', vErr);
+        if (vErr.code === '23505') return '该学号已注册，请直接登录';
+        return '资料写入失败，请稍后重试';
+      }
+      return null;
+    },
+    [],
+  );
+
+  const logout = useCallback(async () => {
+    await supabase.auth.signOut();
+  }, []);
+
+  // ---------- 资料修改 ----------
+
+  const updateNickname = useCallback(
+    async (nickname: string): Promise<true | string> => {
+      const trimmed = nickname.trim();
+      if (!trimmed) return '昵称不能为空';
+      if (!auth.isLoggedIn) return '请先登录';
+      const result = await apiUpdateNickname(auth.userId, trimmed);
+      if (result === true) {
+        setAuth((prev) => ({ ...prev, nickname: trimmed }));
+      }
+      return result;
+    },
+    [auth.isLoggedIn, auth.userId],
+  );
+
+  const updateAvatar = useCallback(
+    async (file: File): Promise<boolean> => {
+      if (!auth.isLoggedIn) return false;
+      try {
+        const url = await uploadAvatar(auth.userId, file);
+        await updateAvatarUrl(auth.userId, url);
+        setAuth((prev) => ({ ...prev, avatar: url }));
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [auth.isLoggedIn, auth.userId],
+  );
+
+  // ---------- 收藏 ----------
+
+  const isFavorite = useCallback(
+    (id: string) => favorites.includes(id),
+    [favorites],
+  );
+
+  const toggleFavorite = useCallback(
+    async (id: string) => {
+      if (!auth.isLoggedIn) {
+        toast.error('请先登录后再收藏');
+        return;
+      }
+      const wasFav = favorites.includes(id);
+      // 乐观更新
+      setFavorites((prev) =>
+        wasFav ? prev.filter((x) => x !== id) : [...prev, id],
+      );
+      try {
+        if (wasFav) await removeFavorite(auth.userId, id);
+        else await addFavorite(auth.userId, id);
+      } catch {
+        // 失败回滚
+        setFavorites((prev) =>
+          wasFav ? [...prev, id] : prev.filter((x) => x !== id),
+        );
+        toast.error('操作失败，请稍后重试');
+      }
+    },
+    [auth.isLoggedIn, auth.userId, favorites],
+  );
 
   const value = useMemo<AppContextValue>(
     () => ({
-      products,
-      ads,
-      wanted,
-      users,
-      favorites,
       auth,
-      feedbacks,
-      toggleFavorite,
+      authLoading,
+      ads,
+      refreshAds,
+      favorites,
       isFavorite,
-      addProduct,
-      addWanted,
-      setTop,
-      setProductStatus,
-      addAd,
-      updateAd,
-      setAdStatus,
+      toggleFavorite,
+      login,
+      adminLogin,
+      register,
+      logout,
       updateNickname,
       updateAvatar,
-      login,
-      register,
-      adminLogin,
-      logout,
-      getProductById,
-      getUserById,
-      submitFeedback,
-      replyFeedback,
-      appendFeedbackMessage,
-      getMyFeedbacks,
     }),
-    [products, ads, wanted, users, favorites, auth, feedbacks],
+    [
+      auth,
+      authLoading,
+      ads,
+      refreshAds,
+      favorites,
+      isFavorite,
+      toggleFavorite,
+      login,
+      adminLogin,
+      register,
+      logout,
+      updateNickname,
+      updateAvatar,
+    ],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

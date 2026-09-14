@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm } from 'react-hook-form';
@@ -18,6 +18,7 @@ import {
   Edit3,
   MessageSquareText,
   LayoutDashboard,
+  Loader2,
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
@@ -28,10 +29,8 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from '@/components/ui/dialog';
 import {
   Form,
@@ -44,15 +43,31 @@ import {
 import { Image } from '@/components/ui/image';
 import { useApp } from '@/context/AppContext';
 import ProductCard from '@/components/ProductCard';
-import { MOCK_TRADES } from '@/data/trades';
 import { toast } from 'sonner';
 import { formatPrice } from '@/lib/utils';
+import { supabase } from '@/lib/supabase';
+import {
+  fetchMyProducts,
+  fetchProductsByIds,
+  fetchMyFeedbacks,
+  fetchMyTrades,
+  fetchMyProfile,
+  submitFeedback,
+  appendFeedbackMessage,
+  type IFeedback,
+  type ITradeRecord,
+} from '@/lib/api';
+import { uploadMiscImage } from '@/lib/image';
+import type { IProduct } from '@/data/products';
 
 const loginSchema = z.object({
-  studentId: z.string().min(4, '学号至少 4 个字符').max(20, '学号不超过 20 个字符'),
+  email: z.string().email('请输入正确的邮箱'),
+  password: z.string().min(6, '密码至少 6 位'),
 });
 const registerSchema = z.object({
-  studentId: z.string().min(4, '学号至少 4 个字符').max(20, '学号不超过 20 个字符'),
+  email: z.string().email('请输入正确的邮箱'),
+  password: z.string().min(6, '密码至少 6 位'),
+  studentId: z.string().regex(/^\d{11}$/, '学号为 11 位数字'),
   name: z.string().min(2, '姓名至少 2 个字符').max(20, '姓名不超过 20 个字符'),
   nickname: z.string().min(2, '昵称至少 2 个字符').max(20, '昵称不超过 20 个字符'),
   college: z.string().min(2, '学院至少 2 个字符').max(30, '学院不超过 30 个字符'),
@@ -63,99 +78,185 @@ type RegisterFormData = z.infer<typeof registerSchema>;
 
 export default function ProfilePage() {
   const navigate = useNavigate();
-  const { auth, login, register, logout, products, favorites, getMyFeedbacks, getUserById, updateNickname, updateAvatar } = useApp();
+  const {
+    auth,
+    login,
+    register,
+    logout,
+    favorites,
+    updateNickname,
+    updateAvatar,
+  } = useApp();
   const [authOpen, setAuthOpen] = useState(false);
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
-  const [authLoading, setAuthLoading] = useState(false);
+  const [authBusy, setAuthBusy] = useState(false);
+
+  const [myProducts, setMyProducts] = useState<IProduct[]>([]);
+  const [favProducts, setFavProducts] = useState<IProduct[]>([]);
+  const [myFeedbacks, setMyFeedbacks] = useState<IFeedback[]>([]);
+  const [myTrades, setMyTrades] = useState<ITradeRecord[]>([]);
+  const [myRating, setMyRating] = useState(5.0);
+  const [myTags, setMyTags] = useState<string[]>([]);
+  const [nicknameInput, setNicknameInput] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [avatarUploading, setAvatarUploading] = useState(false);
 
   const loginForm = useForm<LoginFormData>({
     resolver: zodResolver(loginSchema),
-    defaultValues: { studentId: '' },
+    defaultValues: { email: '', password: '' },
   });
 
   const registerForm = useForm<RegisterFormData>({
     resolver: zodResolver(registerSchema),
-    defaultValues: { studentId: '', name: '', nickname: '', college: '' },
+    defaultValues: {
+      email: '',
+      password: '',
+      studentId: '',
+      name: '',
+      nickname: '',
+      college: '',
+    },
   });
 
-  const myProducts = products.filter((p) => p.sellerId === auth.userId);
-  const favProducts = products.filter((p) => favorites.includes(p.id));
-  const myFeedbacks = getMyFeedbacks();
-  const currentUser = auth.isLoggedIn ? getUserById(auth.userId) : undefined;
-  const myRating = currentUser?.rating ?? 5.0;
-  const [nicknameInput, setNicknameInput] = useState('');
+  const loadMyData = useCallback(async () => {
+    if (!auth.isLoggedIn) return;
+    const uid = auth.userId;
+    const [products, feedbacks, trades, profile] = await Promise.all([
+      fetchMyProducts(uid).catch(() => [] as IProduct[]),
+      fetchMyFeedbacks(uid).catch(() => [] as IFeedback[]),
+      fetchMyTrades(uid).catch(() => [] as ITradeRecord[]),
+      fetchMyProfile(uid).catch(() => null),
+    ]);
+    setMyProducts(products);
+    setMyFeedbacks(feedbacks);
+    setMyTrades(trades);
+    if (profile) {
+      setMyRating(profile.rating);
+      setMyTags(profile.reputationTags);
+    }
+  }, [auth.isLoggedIn, auth.userId]);
+
+  // 登录后加载我的数据
+  useEffect(() => {
+    if (auth.isLoggedIn) {
+      void loadMyData();
+    } else {
+      setMyProducts([]);
+      setFavProducts([]);
+      setMyFeedbacks([]);
+      setMyTrades([]);
+      setMyRating(5.0);
+      setMyTags([]);
+    }
+  }, [auth.isLoggedIn, loadMyData]);
+
+  // 收藏夹变化 → 拉取商品详情
+  useEffect(() => {
+    if (favorites.length === 0) {
+      setFavProducts([]);
+      return;
+    }
+    fetchProductsByIds(favorites)
+      .then(setFavProducts)
+      .catch(() => {});
+  }, [favorites]);
+
+  // 反馈被管理员回复时实时刷新（订阅自己名下 feedbacks 的 UPDATE）
+  useEffect(() => {
+    if (!auth.isLoggedIn) return;
+    const channel = supabase
+      .channel(`my-feedbacks-${auth.userId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'feedbacks',
+          filter: `user_id=eq.${auth.userId}`,
+        },
+        () => {
+          fetchMyFeedbacks(auth.userId)
+            .then(setMyFeedbacks)
+            .catch(() => {});
+        },
+      )
+      .subscribe();
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [auth.isLoggedIn, auth.userId]);
 
   useEffect(() => {
     setNicknameInput(auth.nickname);
   }, [auth.nickname]);
 
-  const handleSaveProfile = () => {
+  const handleSaveProfile = async () => {
     if (!nicknameInput.trim()) {
       toast.error('昵称不能为空');
       return;
     }
-    if (!updateNickname(nicknameInput)) {
-      toast.error('该昵称已被其他用户使用，请换一个');
-      return;
+    setSaving(true);
+    const res = await updateNickname(nicknameInput);
+    setSaving(false);
+    if (res === true) {
+      toast.success('资料已保存');
+    } else {
+      toast.error(res);
     }
-    toast.success('资料已保存');
   };
 
-  // 从相册选择头像
-  const handleAvatarFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // 从相册选择头像 → 压缩上传
+  const handleAvatarFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      updateAvatar(reader.result as string);
-      toast.success('头像已更新');
-    };
-    reader.readAsDataURL(file);
     e.target.value = '';
+    if (!file) return;
+    setAvatarUploading(true);
+    const ok = await updateAvatar(file);
+    setAvatarUploading(false);
+    if (ok) {
+      toast.success('头像已更新');
+    } else {
+      toast.error('头像上传失败，请稍后重试');
+    }
   };
 
   const handleLogin = async (values: LoginFormData) => {
-    setAuthLoading(true);
-    await new Promise((r) => setTimeout(r, 500));
-    const ok = login(values.studentId);
-    setAuthLoading(false);
-    if (ok) {
+    setAuthBusy(true);
+    const err = await login(values.email.trim(), values.password);
+    setAuthBusy(false);
+    if (!err) {
       toast.success('登录成功，欢迎回来～');
       setAuthOpen(false);
       loginForm.reset();
     } else {
-      toast.error('该学号未注册，请先注册账号');
-      setAuthMode('register');
-      registerForm.setValue('studentId', values.studentId);
+      toast.error(err);
     }
   };
 
   const handleRegister = async (values: RegisterFormData) => {
-    setAuthLoading(true);
-    await new Promise((r) => setTimeout(r, 600));
-    const error = register(values);
-    setAuthLoading(false);
-    if (!error) {
+    setAuthBusy(true);
+    const err = await register({
+      email: values.email.trim(),
+      password: values.password,
+      studentId: values.studentId.trim(),
+      name: values.name,
+      nickname: values.nickname,
+      college: values.college,
+    });
+    setAuthBusy(false);
+    if (!err) {
       toast.success('注册成功，已自动登录');
       setAuthOpen(false);
       registerForm.reset();
     } else {
-      toast.error(error);
-      if (error.includes('学号')) {
-        setAuthMode('login');
-        loginForm.setValue('studentId', values.studentId);
-      }
+      toast.error(err);
     }
   };
 
-  const handleLogout = () => {
-    logout();
+  const handleLogout = async () => {
+    await logout();
     toast.success('已退出登录');
   };
-
-  const userTrades = MOCK_TRADES.filter(
-    (t) => t.buyerId === auth.userId || t.sellerId === auth.userId,
-  );
 
   return (
     <div className="min-h-screen bg-background pb-24">
@@ -214,6 +315,11 @@ export default function ProfilePage() {
                         未认证
                       </Badge>
                     )}
+                    {auth.isBanned && (
+                      <Badge variant="destructive" className="text-xs">
+                        已封禁
+                      </Badge>
+                    )}
                   </div>
                   <p className="text-sm text-muted-foreground mt-1">
                     学号 {auth.studentId}
@@ -233,7 +339,7 @@ export default function ProfilePage() {
                     </div>
                     <div className="text-center">
                       <div className="text-lg font-bold text-foreground">
-                        {userTrades.length}
+                        {myTrades.length}
                       </div>
                       <div className="text-xs text-muted-foreground">交易</div>
                     </div>
@@ -376,10 +482,8 @@ export default function ProfilePage() {
           <TabsContent value="trades" className="mt-0">
             {auth.isLoggedIn ? (
               <div className="space-y-3">
-                {userTrades.map((t) => {
+                {myTrades.map((t) => {
                   const isBuyer = t.buyerId === auth.userId;
-                  const otherNick = isBuyer ? t.sellerNickname : t.buyerNickname;
-                  const otherAvatar = isBuyer ? t.sellerAvatar : t.buyerAvatar;
                   return (
                     <div
                       key={t.id}
@@ -399,19 +503,9 @@ export default function ProfilePage() {
                             {formatPrice(t.price)}
                           </span>
                         </div>
-                        <div className="flex items-center gap-2 mt-2">
-                          <Image
-                            src={otherAvatar}
-                            alt=""
-                            className="size-5 rounded-full"
-                          />
-                          <span className="text-xs text-muted-foreground">
-                            {isBuyer ? '卖家' : '买家'}：{otherNick}
-                          </span>
-                        </div>
                         <div className="flex items-center justify-between mt-2 pt-2 border-t border-border/40">
                           <span className="text-xs text-muted-foreground">
-                            {t.completedAt} · 交易完成
+                            {t.completedAt || ''} · {t.status === 'completed' ? '交易完成' : '已取消'}
                           </span>
                           <Badge variant="default" className="text-xs h-5">
                             {isBuyer ? '我是买家' : '我是卖家'}
@@ -421,12 +515,15 @@ export default function ProfilePage() {
                     </div>
                   );
                 })}
-                {userTrades.length === 0 && (
+                {myTrades.length === 0 && (
                   <div className="flex flex-col items-center justify-center py-16 text-center">
                     <div className="size-14 rounded-full bg-muted flex items-center justify-center mb-3">
                       <Clock className="size-7 text-muted-foreground" />
                     </div>
                     <h3 className="text-base font-medium mb-1">暂无交易记录</h3>
+                    <p className="text-sm text-muted-foreground">
+                      完成的线下交易将在这里展示
+                    </p>
                   </div>
                 )}
               </div>
@@ -452,13 +549,13 @@ export default function ProfilePage() {
                         ))}
                       </div>
                       <div className="text-xs text-muted-foreground mt-1">
-                        基于 {userTrades.length} 次评价
+                        基于 {myTrades.length} 次评价
                       </div>
                     </div>
                     <div className="flex-1">
                       <h4 className="font-semibold text-sm mb-2">信誉标签</h4>
                       <div className="flex flex-wrap gap-1.5">
-                        {['正常交易', '快速回复', '好评卖家', '准时自提'].map(
+                        {(myTags.length > 0 ? myTags : ['正常交易']).map(
                           (tag) => (
                             <Badge
                               key={tag}
@@ -477,12 +574,10 @@ export default function ProfilePage() {
                 <div>
                   <h3 className="font-semibold text-sm mb-3">收到的评价</h3>
                   <div className="space-y-3">
-                    {userTrades.map((t) => {
+                    {myTrades.map((t) => {
                       const isBuyer = t.buyerId === auth.userId;
                       const comment = isBuyer ? t.sellerComment : t.buyerComment;
                       const rating = isBuyer ? t.sellerRating : t.buyerRating;
-                      const otherNick = isBuyer ? t.sellerNickname : t.buyerNickname;
-                      const otherAvatar = isBuyer ? t.sellerAvatar : t.buyerAvatar;
                       if (!comment) return null;
                       return (
                         <div
@@ -490,12 +585,9 @@ export default function ProfilePage() {
                           className="bg-card border border-border/60 rounded-xl p-4"
                         >
                           <div className="flex items-center gap-2 mb-2">
-                            <Image
-                              src={otherAvatar}
-                              alt=""
-                              className="size-7 rounded-full"
-                            />
-                            <span className="font-medium text-sm">{otherNick}</span>
+                            <span className="font-medium text-sm">
+                              {isBuyer ? '卖家' : '买家'}的评价
+                            </span>
                             <div className="flex items-center gap-0.5 ml-auto">
                               {Array.from({ length: rating || 0 }).map((_, i) => (
                                 <Star
@@ -507,11 +599,19 @@ export default function ProfilePage() {
                           </div>
                           <p className="text-sm text-foreground/80">{comment}</p>
                           <p className="text-xs text-muted-foreground mt-2">
-                            {t.completedAt} · 关于「{t.productTitle}」
+                            {t.completedAt || ''} · 关于「{t.productTitle}」
                           </p>
                         </div>
                       );
                     })}
+                    {myTrades.every((t) => {
+                      const isBuyer = t.buyerId === auth.userId;
+                      return !(isBuyer ? t.sellerComment : t.buyerComment);
+                    }) && (
+                      <div className="bg-card border border-border/60 rounded-xl p-8 text-center text-sm text-muted-foreground">
+                        还没有收到评价
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -523,10 +623,7 @@ export default function ProfilePage() {
           {/* 意见反馈 */}
           <TabsContent value="feedback" className="mt-0">
             {auth.isLoggedIn ? (
-              <FeedbackList
-                feedbacks={myFeedbacks}
-                onSubmit={() => {}}
-              />
+              <FeedbackList feedbacks={myFeedbacks} onChanged={loadMyData} />
             ) : (
               <EmptyLoginTip onLogin={() => { setAuthMode('login'); setAuthOpen(true); }} />
             )}
@@ -544,9 +641,13 @@ export default function ProfilePage() {
                       className="size-16 rounded-full object-cover"
                     />
                     <span className="absolute inset-0 rounded-full bg-black/40 text-white text-[10px] flex items-center justify-center opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
-                      更换
+                      {avatarUploading ? (
+                        <Loader2 className="size-4 animate-spin" />
+                      ) : (
+                        '更换'
+                      )}
                     </span>
-                    <input type="file" accept="image/*" className="hidden" onChange={handleAvatarFile} />
+                    <input type="file" accept="image/*" className="hidden" onChange={handleAvatarFile} disabled={avatarUploading} />
                   </label>
                   <div>
                     <p className="font-semibold">{auth.nickname}</p>
@@ -578,9 +679,9 @@ export default function ProfilePage() {
                     <LogOut className="size-4 mr-1.5" />
                     退出登录
                   </Button>
-                  <Button className="flex-1" onClick={handleSaveProfile}>
+                  <Button className="flex-1" onClick={handleSaveProfile} disabled={saving}>
                     <Edit3 className="size-4 mr-1.5" />
-                    保存修改
+                    {saving ? '保存中...' : '保存修改'}
                   </Button>
                 </div>
               </div>
@@ -615,21 +716,39 @@ export default function ProfilePage() {
                   <div className="bg-primary/5 border border-primary/20 rounded-xl p-4 flex items-start gap-3">
                     <Shield className="size-5 text-primary shrink-0 mt-0.5" />
                     <div className="text-sm">
-                      <p className="font-medium text-primary">开放注册</p>
+                      <p className="font-medium text-primary">邮箱登录</p>
                       <p className="text-foreground/70 text-xs mt-0.5 leading-relaxed">
-                        学号、姓名等信息自助填写即可，保留信誉评价作为交易约束。
+                        使用注册时填写的邮箱和密码登录，数据云端同步。
                       </p>
                     </div>
                   </div>
                   <FormField
                     control={loginForm.control}
-                    name="studentId"
+                    name="email"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>学号</FormLabel>
+                        <FormLabel>邮箱</FormLabel>
                         <FormControl>
                           <Input
-                            placeholder="请输入已注册的学号"
+                            type="email"
+                            placeholder="请输入注册邮箱"
+                            {...field}
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={loginForm.control}
+                    name="password"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>密码</FormLabel>
+                        <FormControl>
+                          <Input
+                            type="password"
+                            placeholder="请输入密码"
                             {...field}
                           />
                         </FormControl>
@@ -646,8 +765,8 @@ export default function ProfilePage() {
                       没有账号？去注册
                     </button>
                   </p>
-                  <Button type="submit" className="w-full h-11" disabled={authLoading}>
-                    {authLoading ? '登录中...' : '登 录'}
+                  <Button type="submit" className="w-full h-11" disabled={authBusy}>
+                    {authBusy ? '登录中...' : '登 录'}
                   </Button>
                 </form>
               </Form>
@@ -656,15 +775,32 @@ export default function ProfilePage() {
             <TabsContent value="register">
               <Form {...registerForm}>
                 <form onSubmit={registerForm.handleSubmit(handleRegister)} className="space-y-4">
-                  <div className="bg-primary/5 border border-primary/20 rounded-xl p-4 flex items-start gap-3">
-                    <User className="size-5 text-primary shrink-0 mt-0.5" />
-                    <div className="text-sm">
-                      <p className="font-medium text-primary">开放注册</p>
-                      <p className="text-foreground/70 text-xs mt-0.5 leading-relaxed">
-                        填好信息即可注册，无需学号验证；信誉评价体系保障交易秩序。
-                      </p>
-                    </div>
-                  </div>
+                  <FormField
+                    control={registerForm.control}
+                    name="email"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>邮箱</FormLabel>
+                        <FormControl>
+                          <Input type="email" placeholder="用于登录的邮箱" {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={registerForm.control}
+                    name="password"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>密码</FormLabel>
+                        <FormControl>
+                          <Input type="password" placeholder="至少 6 位" {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
                   <FormField
                     control={registerForm.control}
                     name="studentId"
@@ -672,7 +808,7 @@ export default function ProfilePage() {
                       <FormItem>
                         <FormLabel>学号</FormLabel>
                         <FormControl>
-                          <Input placeholder="请输入学号" {...field} />
+                          <Input placeholder="11 位学号" {...field} />
                         </FormControl>
                         <FormMessage />
                       </FormItem>
@@ -727,8 +863,8 @@ export default function ProfilePage() {
                       直接登录
                     </button>
                   </p>
-                  <Button type="submit" className="w-full h-11" disabled={authLoading}>
-                    {authLoading ? '注册中...' : '立即注册'}
+                  <Button type="submit" className="w-full h-11" disabled={authBusy}>
+                    {authBusy ? '注册中...' : '立即注册'}
                   </Button>
                 </form>
               </Form>
@@ -755,43 +891,75 @@ function EmptyLoginTip({ onLogin }: { onLogin: () => void }) {
   );
 }
 
-function FeedbackList({ feedbacks }: { feedbacks: ReturnType<typeof useApp>['feedbacks']; onSubmit: () => void }) {
-  const { submitFeedback, appendFeedbackMessage } = useApp();
+function FeedbackList({
+  feedbacks,
+  onChanged,
+}: {
+  feedbacks: IFeedback[];
+  onChanged: () => void;
+}) {
+  const { auth } = useApp();
   const [content, setContent] = useState('');
-  const [image, setImage] = useState<string | undefined>();
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [replyInput, setReplyInput] = useState('');
+  const [appending, setAppending] = useState(false);
 
   const canSubmit = !feedbacks.some((f) => f.status === 'pending');
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (!content.trim()) {
       toast.error('请输入反馈内容');
       return;
     }
-    const res = submitFeedback(content.trim(), image);
-    if (res.success) {
-      toast.success('反馈已提交，管理员会尽快回复');
-      setContent('');
-      setImage(undefined);
-    } else {
-      toast.error(res.message || '提交失败');
+    setSubmitting(true);
+    try {
+      let imageUrl: string | undefined;
+      if (imageFile) {
+        imageUrl = await uploadMiscImage(auth.userId, imageFile, 'feedback');
+      }
+      const res = await submitFeedback(auth.userId, content.trim(), imageUrl);
+      if (res.success) {
+        toast.success('反馈已提交，管理员会尽快回复');
+        setContent('');
+        setImageFile(null);
+        setImagePreview(null);
+        onChanged();
+      } else {
+        toast.error(res.message || '提交失败');
+      }
+    } catch {
+      toast.error('提交失败，请稍后重试');
+    } finally {
+      setSubmitting(false);
     }
   };
 
-  const handleAppend = (feedbackId: string) => {
-    if (!replyInput.trim()) return;
-    appendFeedbackMessage(feedbackId, replyInput.trim());
-    setReplyInput('');
-    toast.success('已追加消息');
+  const handleAppend = async (feedbackId: string) => {
+    if (!replyInput.trim() || appending) return;
+    setAppending(true);
+    try {
+      await appendFeedbackMessage(feedbackId, replyInput.trim());
+      setReplyInput('');
+      toast.success('已追加消息');
+      onChanged();
+    } catch {
+      toast.error('发送失败，请稍后重试');
+    } finally {
+      setAppending(false);
+    }
   };
 
-  // 图片选择（简单 FileReader）
+  // 图片选择（本地预览，提交时上传）
   const handleImage = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
+    setImageFile(file);
     const reader = new FileReader();
-    reader.onload = () => setImage(reader.result as string);
+    reader.onload = () => setImagePreview(reader.result as string);
     reader.readAsDataURL(file);
   };
 
@@ -812,12 +980,12 @@ function FeedbackList({ feedbacks }: { feedbacks: ReturnType<typeof useApp>['fee
               rows={4}
               className="w-full rounded-lg border border-border/60 bg-background p-3 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/50"
             />
-            {image && (
+            {imagePreview && (
               <div className="relative inline-block">
-                <Image src={image} alt="" className="size-20 rounded-lg object-cover border border-border/60" />
+                <Image src={imagePreview} alt="" className="size-20 rounded-lg object-cover border border-border/60" />
                 <button
                   type="button"
-                  onClick={() => setImage(undefined)}
+                  onClick={() => { setImageFile(null); setImagePreview(null); }}
                   className="!absolute -top-2 -right-2 z-10 size-6 rounded-full bg-destructive text-white flex items-center justify-center text-xs"
                 >
                   ×
@@ -829,7 +997,9 @@ function FeedbackList({ feedbacks }: { feedbacks: ReturnType<typeof useApp>['fee
                 + 上传图片
                 <input type="file" accept="image/*" className="hidden" onChange={handleImage} />
               </label>
-              <Button size="sm" onClick={handleSubmit}>提交反馈</Button>
+              <Button size="sm" onClick={handleSubmit} disabled={submitting}>
+                {submitting ? '提交中...' : '提交反馈'}
+              </Button>
             </div>
           </div>
         ) : (
@@ -922,7 +1092,7 @@ function FeedbackList({ feedbacks }: { feedbacks: ReturnType<typeof useApp>['fee
                             placeholder="继续追问..."
                             className="flex-1 rounded-lg border border-border/60 px-3 py-2 text-sm bg-card focus:outline-none focus:ring-2 focus:ring-primary/30"
                           />
-                          <Button size="sm" onClick={() => handleAppend(f.id)}>
+                          <Button size="sm" onClick={() => handleAppend(f.id)} disabled={appending}>
                             发送
                           </Button>
                         </div>

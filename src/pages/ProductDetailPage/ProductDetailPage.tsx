@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useParams, Link } from 'react-router-dom';
 import {
   ArrowLeft,
@@ -14,6 +14,7 @@ import {
   Clock,
   CheckCircle2,
   AlertTriangle,
+  Loader2,
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
@@ -26,7 +27,6 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from '@/components/ui/dialog';
 import {
   Select,
@@ -40,57 +40,133 @@ import { useApp } from '@/context/AppContext';
 import { formatPrice, cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import ProductCard from '@/components/ProductCard';
+import {
+  fetchProductById,
+  fetchRelatedProducts,
+  insertReport,
+  setProductStatus,
+  type ISellerInfo,
+} from '@/lib/api';
+import type { IProduct } from '@/data/products';
 
 export default function ProductDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { getProductById, isFavorite, toggleFavorite, products, getUserById } =
-    useApp();
+  const { isFavorite, toggleFavorite, auth } = useApp();
 
-  const product = useMemo(() => (id ? getProductById(id) : undefined), [id, getProductById]);
+  const [product, setProduct] = useState<IProduct | null>(null);
+  const [seller, setSeller] = useState<ISellerInfo | undefined>();
+  const [relatedProducts, setRelatedProducts] = useState<IProduct[]>([]);
+  const [loading, setLoading] = useState(true);
   const [imgIdx, setImgIdx] = useState(0);
   const [reportOpen, setReportOpen] = useState(false);
   const [reportReason, setReportReason] = useState('');
   const [reportDetail, setReportDetail] = useState('');
+  const [reporting, setReporting] = useState(false);
 
   useEffect(() => {
+    if (!id) return;
+    setLoading(true);
     setImgIdx(0);
     window.scrollTo({ top: 0 });
+    fetchProductById(id)
+      .then((res) => {
+        setProduct(res?.product ?? null);
+        setSeller(res?.seller);
+        if (res?.product) {
+          fetchRelatedProducts(res.product.category, res.product.id)
+            .then(setRelatedProducts)
+            .catch(() => {});
+        }
+      })
+      .catch(() => setProduct(null))
+      .finally(() => setLoading(false));
   }, [id]);
 
   const fav = product ? isFavorite(product.id) : false;
 
-  const seller = product ? getUserById(product.sellerId) : undefined;
-
-  const relatedProducts = useMemo(() => {
-    if (!product) return [];
-    return products
-      .filter(
-        (p) => p.id !== product.id && p.status === 'on_sale' && p.category === product.category,
-      )
-      .slice(0, 4);
-  }, [product, products]);
-
-  const handleReport = () => {
+  const handleReport = async () => {
     if (!reportReason) {
       toast.error('请选择举报原因');
       return;
     }
-    toast.success('举报已提交，管理员会尽快处理');
-    setReportOpen(false);
-    setReportReason('');
-    setReportDetail('');
+    if (!auth.isLoggedIn) {
+      toast.error('请先登录后再举报');
+      navigate('/profile');
+      return;
+    }
+    if (!product) return;
+    setReporting(true);
+    try {
+      await insertReport(auth.userId, {
+        targetType: 'product',
+        targetId: product.id,
+        reason: reportReason,
+        detail: reportDetail.trim(),
+      });
+      toast.success('举报已提交，管理员会尽快处理');
+      setReportOpen(false);
+      setReportReason('');
+      setReportDetail('');
+    } catch {
+      toast.error('提交失败，请稍后重试');
+    } finally {
+      setReporting(false);
+    }
   };
 
-  const handleChat = () => {
-    navigate(`/messages?product=${product?.id || ''}`);
-  };
+  const handleChat = useCallback(() => {
+    if (!product) return;
+    if (!auth.isLoggedIn) {
+      toast.error('请先登录后再私信卖家');
+      navigate('/profile');
+      return;
+    }
+    if (auth.userId === product.sellerId) {
+      toast.info('这是你自己发布的商品');
+      return;
+    }
+    navigate(`/messages?product=${product.id}`);
+  }, [product, auth.isLoggedIn, auth.userId, navigate]);
 
   const handleToggleFav = () => {
     if (!product) return;
-    toggleFavorite(product.id);
-    toast.success(fav ? '已取消收藏' : '已加入收藏');
+    void toggleFavorite(product.id).then(() => {
+      if (auth.isLoggedIn) toast.success(fav ? '已取消收藏' : '已加入收藏');
+    });
   };
+
+  const isOwner = auth.isLoggedIn && product?.sellerId === auth.userId;
+
+  // 卖家管理自己的商品：已售出 / 下架 / 重新上架
+  const handleSetStatus = async (status: IProduct['status']) => {
+    if (!product) return;
+    try {
+      await setProductStatus(product.id, status);
+      setProduct({
+        ...product,
+        status,
+        is_top: status === 'on_sale' ? product.is_top : false,
+      });
+      toast.success(
+        status === 'sold'
+          ? '已标记为「已售出」，商品将从集市下架'
+          : status === 'offline'
+            ? '已下架，可在详情页重新上架'
+            : '已重新上架',
+      );
+    } catch {
+      toast.error('操作失败，请稍后重试');
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Loader2 className="size-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
 
   if (!product) {
     return (
@@ -151,6 +227,13 @@ export default function ProductDetailPage() {
                 <div className="absolute top-3 left-3 flex items-center gap-1 bg-gradient-to-r from-amber-500 to-amber-400 text-white text-xs font-semibold px-3 py-1.5 rounded-full shadow-md">
                   <Sun className="size-3.5" />
                   向阳位 · 置顶
+                </div>
+              )}
+              {product.status === 'sold' && (
+                <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                  <span className="bg-white/95 text-foreground font-bold px-5 py-2 rounded-full text-sm shadow-md">
+                    已售出
+                  </span>
                 </div>
               )}
               {product.images.length > 1 && (
@@ -280,7 +363,7 @@ export default function ProductDetailPage() {
                   </div>
                   <div className="flex items-center gap-1 text-xs text-muted-foreground">
                     <Star className="size-3 text-amber-500 fill-amber-500" />
-                    {seller?.rating?.toFixed(1) || '4.8'} · {seller?.tradeCount || 0} 次交易
+                    {seller ? seller.rating.toFixed(1) : '5.0'} · {seller?.tradeCount ?? 0} 次交易
                   </div>
                 </div>
               </div>
@@ -306,6 +389,17 @@ export default function ProductDetailPage() {
                   </Badge>
                 )}
               </div>
+              {!isOwner && product.status === 'on_sale' && (
+                <Button onClick={handleChat} className="w-full mt-3 gap-2">
+                  <MessageSquare className="size-4" />
+                  私信卖家
+                </Button>
+              )}
+              {isOwner && (
+                <p className="text-xs text-muted-foreground mt-3 text-center">
+                  这是你发布的商品，可用底部按钮管理状态
+                </p>
+              )}
             </div>
           </motion.div>
         </div>
@@ -326,38 +420,110 @@ export default function ProductDetailPage() {
       {/* 底部操作栏 (移动端) */}
       <div className="fixed bottom-0 left-0 right-0 z-50 bg-background/95 backdrop-blur-md border-t border-border/60 md:hidden">
         <div className="px-4 py-3 flex items-center gap-3">
-          <Button
-            variant="secondary"
-            size="icon"
-            onClick={handleToggleFav}
-            className={cn('size-11 shrink-0', fav && 'text-primary')}
-          >
-            <Heart className={cn('size-5', fav && 'fill-current')} />
-          </Button>
-          <Button onClick={handleChat} className="flex-1 h-11 text-base gap-2">
-            <MessageSquare className="size-5" />
-            私信卖家
-          </Button>
+          {isOwner ? (
+            product.status === 'on_sale' ? (
+              <>
+                <Button
+                  variant="secondary"
+                  className="flex-1 h-11"
+                  onClick={() => void handleSetStatus('offline')}
+                >
+                  下架
+                </Button>
+                <Button
+                  className="flex-1 h-11 gap-2"
+                  onClick={() => void handleSetStatus('sold')}
+                >
+                  <CheckCircle2 className="size-5" />
+                  标记已售出
+                </Button>
+              </>
+            ) : (
+              <Button
+                className="flex-1 h-11"
+                onClick={() => void handleSetStatus('on_sale')}
+              >
+                重新上架
+              </Button>
+            )
+          ) : (
+            <>
+              <Button
+                variant="secondary"
+                size="icon"
+                onClick={handleToggleFav}
+                className={cn('size-11 shrink-0', fav && 'text-primary')}
+              >
+                <Heart className={cn('size-5', fav && 'fill-current')} />
+              </Button>
+              {product.status === 'sold' ? (
+                <Button disabled className="flex-1 h-11 text-base">
+                  已售出
+                </Button>
+              ) : (
+                <Button onClick={handleChat} className="flex-1 h-11 text-base gap-2">
+                  <MessageSquare className="size-5" />
+                  私信卖家
+                </Button>
+              )}
+            </>
+          )}
         </div>
       </div>
 
       {/* PC 端右侧悬浮操作 */}
       <div className="hidden md:flex fixed right-6 bottom-8 flex-col gap-2 z-40">
-        <Button
-          variant="secondary"
-          size="icon"
-          onClick={handleToggleFav}
-          className={cn('size-12 shadow-lg rounded-full', fav && 'text-primary')}
-        >
-          <Heart className={cn('size-5', fav && 'fill-current')} />
-        </Button>
-        <Button
-          onClick={handleChat}
-          className="shadow-lg rounded-full gap-2 h-12 px-5"
-        >
-          <MessageSquare className="size-5" />
-          私信卖家
-        </Button>
+        {isOwner ? (
+          product.status === 'on_sale' ? (
+            <>
+              <Button
+                variant="secondary"
+                onClick={() => void handleSetStatus('offline')}
+                className="shadow-lg rounded-full h-12 px-5"
+              >
+                下架
+              </Button>
+              <Button
+                onClick={() => void handleSetStatus('sold')}
+                className="shadow-lg rounded-full gap-2 h-12 px-5"
+              >
+                <CheckCircle2 className="size-5" />
+                标记已售出
+              </Button>
+            </>
+          ) : (
+            <Button
+              onClick={() => void handleSetStatus('on_sale')}
+              className="shadow-lg rounded-full h-12 px-5"
+            >
+              重新上架
+            </Button>
+          )
+        ) : (
+          <>
+            <Button
+              variant="secondary"
+              size="icon"
+              onClick={handleToggleFav}
+              className={cn('size-12 shadow-lg rounded-full', fav && 'text-primary')}
+            >
+              <Heart className={cn('size-5', fav && 'fill-current')} />
+            </Button>
+            {product.status === 'sold' ? (
+              <Button disabled className="shadow-lg rounded-full h-12 px-5">
+                已售出
+              </Button>
+            ) : (
+              <Button
+                onClick={handleChat}
+                className="shadow-lg rounded-full gap-2 h-12 px-5"
+              >
+                <MessageSquare className="size-5" />
+                私信卖家
+              </Button>
+            )}
+          </>
+        )}
       </div>
 
       {/* 举报弹窗 */}
@@ -379,12 +545,12 @@ export default function ProductDetailPage() {
                   <SelectValue placeholder="请选择举报原因" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="fake">虚假信息 / 假货</SelectItem>
-                  <SelectItem value="stolen">疑似被盗物品</SelectItem>
-                  <SelectItem value="prohibited">违禁物品</SelectItem>
-                  <SelectItem value="offline">诱导线下加微信/QQ</SelectItem>
-                  <SelectItem value="fraud">疑似诈骗</SelectItem>
-                  <SelectItem value="other">其他原因</SelectItem>
+                  <SelectItem value="虚假信息 / 假货">虚假信息 / 假货</SelectItem>
+                  <SelectItem value="疑似被盗物品">疑似被盗物品</SelectItem>
+                  <SelectItem value="违禁物品">违禁物品</SelectItem>
+                  <SelectItem value="诱导添加微信/QQ">诱导添加微信/QQ</SelectItem>
+                  <SelectItem value="疑似诈骗">疑似诈骗</SelectItem>
+                  <SelectItem value="其他原因">其他原因</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -404,8 +570,8 @@ export default function ProductDetailPage() {
             <Button variant="secondary" onClick={() => setReportOpen(false)}>
               取消
             </Button>
-            <Button onClick={handleReport} variant="destructive">
-              提交举报
+            <Button onClick={handleReport} variant="destructive" disabled={reporting}>
+              {reporting ? '提交中...' : '提交举报'}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Search,
@@ -11,6 +11,7 @@ import {
   Bike,
   MoreHorizontal,
   Sparkles,
+  Loader2,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '@/components/ui/button';
@@ -23,13 +24,14 @@ import {
   SheetTitle,
   SheetTrigger,
 } from '@/components/ui/sheet';
-import { Badge } from '@/components/ui/badge';
 import ProductCard from '@/components/ProductCard';
-import { useApp } from '@/context/AppContext';
 import { CATEGORIES } from '@/data/categories';
 import ForestGoods from '@/components/ForestGoods';
+import { supabase } from '@/lib/supabase';
+import { fetchProductsPage, fetchTopProducts, type ProductSort } from '@/lib/api';
+import type { IProduct } from '@/data/products';
 
-type SortType = 'newest' | 'price-asc' | 'price-desc';
+const PAGE_SIZE = 15;
 
 const categoryIcons: Record<string, typeof BookOpen> = {
   all: Sparkles,
@@ -43,76 +45,126 @@ const categoryIcons: Record<string, typeof BookOpen> = {
 export default function ProductListPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { products } = useApp();
 
-  const [category, setCategory] = useState<string>(
-    searchParams.get('category') || 'all',
-  );
-  const [keyword, setKeyword] = useState<string>(searchParams.get('q') || '');
-  const [sort, setSort] = useState<SortType>('newest');
+  const category = searchParams.get('category') || 'all';
+  const keyword = searchParams.get('q') || '';
+  const [keywordInput, setKeywordInput] = useState(keyword);
+  const [sort, setSort] = useState<ProductSort>('newest');
   const [filterOpen, setFilterOpen] = useState(false);
 
-  // sync with url
+  const [tops, setTops] = useState<IProduct[]>([]);
+  const [items, setItems] = useState<IProduct[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [initialLoaded, setInitialLoaded] = useState(false);
+
+  // 同步 URL 关键词到输入框
   useEffect(() => {
-    const q = searchParams.get('q');
-    const cat = searchParams.get('category');
-    if (q !== null) setKeyword(q);
-    if (cat !== null) setCategory(cat);
-  }, [searchParams]);
+    setKeywordInput(keyword);
+  }, [keyword]);
 
-  const filtered = useMemo(() => {
-    let list = products.filter((p) => p.status === 'on_sale');
+  const loadPage = useCallback(
+    async (pageIndex: number, append: boolean) => {
+      setLoading(true);
+      try {
+        const res = await fetchProductsPage({
+          category,
+          keyword,
+          sort,
+          page: pageIndex,
+          pageSize: PAGE_SIZE,
+        });
+        setItems((prev) => (append ? [...prev, ...res.items] : res.items));
+        setTotal(res.total);
+        setHasMore(res.hasMore);
+        setPage(pageIndex);
+      } catch {
+        // 网络异常保持旧数据
+      } finally {
+        setLoading(false);
+        setInitialLoaded(true);
+      }
+    },
+    [category, keyword, sort],
+  );
 
-    if (category !== 'all') {
-      list = list.filter((p) => p.category === category);
-    }
-    if (keyword.trim()) {
-      const kw = keyword.trim().toLowerCase();
-      list = list.filter(
-        (p) =>
-          p.title.toLowerCase().includes(kw) ||
-          p.description.toLowerCase().includes(kw),
-      );
-    }
+  // 筛选 / 排序变化 → 重置到第一页；置顶商品独立取一次
+  useEffect(() => {
+    void loadPage(0, false);
+  }, [loadPage]);
 
-    // sort: 置顶优先
-    const top = list
-      .filter((p) => p.is_top)
-      .sort((a, b) => b.top_weight - a.top_weight);
-    const normal = list.filter((p) => !p.is_top);
+  useEffect(() => {
+    fetchTopProducts(3)
+      .then(setTops)
+      .catch(() => {});
+  }, []);
 
-    if (sort === 'newest') {
-      normal.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    } else if (sort === 'price-asc') {
-      normal.sort((a, b) => a.price - b.price);
-    } else if (sort === 'price-desc') {
-      normal.sort((a, b) => b.price - a.price);
-    }
+  // Realtime：商品变化时刷新当前筛选结果与置顶（1s 防抖，单频道）
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const channel = supabase
+      .channel('list-products')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'products' },
+        () => {
+          if (timerRef.current) clearTimeout(timerRef.current);
+          timerRef.current = setTimeout(() => {
+            void loadPage(0, false);
+            fetchTopProducts(3)
+              .then(setTops)
+              .catch(() => {});
+          }, 1000);
+        },
+      )
+      .subscribe();
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      void supabase.removeChannel(channel);
+    };
+  }, [loadPage]);
 
-    return [...top, ...normal];
-  }, [products, category, keyword, sort]);
+  // 滚动到底自动加载更多
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && hasMore && !loading) {
+          void loadPage(page + 1, true);
+        }
+      },
+      { rootMargin: '200px' },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hasMore, loading, page, loadPage]);
 
   const onSearch = (e: React.FormEvent) => {
     e.preventDefault();
     const params = new URLSearchParams();
-    if (keyword) params.set('q', keyword);
+    if (keywordInput.trim()) params.set('q', keywordInput.trim());
     if (category !== 'all') params.set('category', category);
     navigate(`/products?${params.toString()}`);
   };
 
   const handleCategoryChange = (cat: string) => {
-    setCategory(cat);
     const params = new URLSearchParams();
     if (keyword) params.set('q', keyword);
     if (cat !== 'all') params.set('category', cat);
     navigate(`/products?${params.toString()}`);
   };
 
-  const sortLabel: Record<SortType, string> = {
+  const sortLabel: Record<ProductSort, string> = {
     newest: '最新',
     'price-asc': '价格从低到高',
     'price-desc': '价格从高到低',
   };
+
+  const displayCount = total + tops.length;
 
   return (
     <div className="min-h-screen bg-background">
@@ -127,18 +179,17 @@ export default function ProductListPage() {
           <Search className="absolute left-4 top-1/2 -translate-y-1/2 size-5 text-muted-foreground pointer-events-none" />
           <Input
             type="search"
-            value={keyword}
-            onChange={(e) => setKeyword(e.target.value)}
+            value={keywordInput}
+            onChange={(e) => setKeywordInput(e.target.value)}
             placeholder="搜索教材、自行车、生活用品..."
             className="pl-12 pr-4 h-12 rounded-xl bg-card border-border/60 shadow-sm"
           />
-          {keyword && (
+          {keywordInput && (
             <Button
               type="button"
               variant="ghost"
               size="icon"
               onClick={() => {
-                setKeyword('');
                 const params = new URLSearchParams();
                 if (category !== 'all') params.set('category', category);
                 navigate(`/products?${params.toString()}`);
@@ -170,13 +221,13 @@ export default function ProductListPage() {
             </TabsList>
           </Tabs>
 
-          {/* 排序 + 筛选 (PC 端 inline) */}
+          {/* 排序 (PC 端 inline) */}
           <div className="hidden md:flex items-center gap-2 shrink-0">
             <Button
               variant="secondary"
               size="sm"
               onClick={() => {
-                const next: SortType =
+                const next: ProductSort =
                   sort === 'newest' ? 'price-asc' : sort === 'price-asc' ? 'price-desc' : 'newest';
                 setSort(next);
               }}
@@ -207,7 +258,7 @@ export default function ProductListPage() {
                 <div>
                   <h4 className="text-sm font-medium mb-3">排序方式</h4>
                   <div className="space-y-2">
-                    {(Object.keys(sortLabel) as SortType[]).map((s) => (
+                    {(Object.keys(sortLabel) as ProductSort[]).map((s) => (
                       <Button
                         key={s}
                         variant={sort === s ? 'default' : 'secondary'}
@@ -255,14 +306,14 @@ export default function ProductListPage() {
         <div className="flex items-center justify-between mb-4">
           <p className="text-sm text-muted-foreground">
             共找到{' '}
-            <span className="text-foreground font-semibold">{filtered.length}</span>{' '}
+            <span className="text-foreground font-semibold">{displayCount}</span>{' '}
             件商品
           </p>
         </div>
 
         {/* 商品网格 */}
         <AnimatePresence mode="wait">
-          {filtered.length > 0 ? (
+          {displayCount > 0 ? (
             <motion.div
               key="grid"
               initial={{ opacity: 0 }}
@@ -271,18 +322,14 @@ export default function ProductListPage() {
               transition={{ duration: 0.3 }}
               className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 md:gap-4"
             >
-              {filtered.map((p, i) => (
-                <motion.div
-                  key={p.id}
-                  initial={{ opacity: 0, y: 12 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.3, delay: i * 0.03 }}
-                >
-                  <ProductCard product={p} />
-                </motion.div>
+              {tops.map((p) => (
+                <ProductCard key={p.id} product={p} />
+              ))}
+              {items.map((p) => (
+                <ProductCard key={p.id} product={p} />
               ))}
             </motion.div>
-          ) : (
+          ) : initialLoaded && !loading ? (
             <motion.div
               key="empty"
               initial={{ opacity: 0, y: 10 }}
@@ -299,18 +346,23 @@ export default function ProductListPage() {
               <p className="text-sm text-muted-foreground mb-4">
                 换个关键词或分类试试看？
               </p>
-              <Button
-                onClick={() => {
-                  setCategory('all');
-                  setKeyword('');
-                  navigate('/products');
-                }}
-              >
-                查看全部商品
-              </Button>
+              <Button onClick={() => navigate('/products')}>查看全部商品</Button>
             </motion.div>
-          )}
+          ) : null}
         </AnimatePresence>
+
+        {/* 加载更多哨兵 */}
+        <div ref={sentinelRef} className="h-1" />
+        {loading && (
+          <div className="flex justify-center py-6 text-muted-foreground">
+            <Loader2 className="size-5 animate-spin" />
+          </div>
+        )}
+        {!hasMore && items.length > 0 && !loading && (
+          <p className="text-center text-xs text-muted-foreground py-6">
+            已经到底啦
+          </p>
+        )}
       </div>
     </div>
   );

@@ -31,7 +31,7 @@ export default function ProductCard({ product }: ProductCardProps) {
     >
       <div className="relative aspect-square bg-muted overflow-hidden">
         <Image
-          src={product.images[0]}
+          src={product.thumbs[0] || product.images[0]}
           alt={product.title}
           className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
         />
@@ -53,6 +53,13 @@ export default function ProductCard({ product }: ProductCardProps) {
         >
           <Heart className={cn('size-4', fav && 'fill-current')} />
         </button>
+        {product.status !== 'on_sale' && (
+          <div className="absolute inset-0 bg-black/35 flex items-center justify-center z-10">
+            <span className="bg-background/95 text-foreground text-xs font-semibold px-2.5 py-1 rounded-full shadow">
+              {product.status === 'sold' ? '已售出' : '已下架'}
+            </span>
+          </div>
+        )}
         <Badge
           variant="secondary"
           className="absolute bottom-2 left-2 text-[10px] px-1.5 py-0 bg-background/90 backdrop-blur-sm"
