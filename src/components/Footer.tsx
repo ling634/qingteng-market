@@ -2,7 +2,6 @@ import { NavLink, useNavigate } from 'react-router-dom';
 import { Leaf, Shield, Heart, Info, MessageSquareText } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { toast } from 'sonner';
-import { UniversalLink } from '@lark-apaas/client-toolkit-lite';
 
 export default function Footer() {
   const { auth } = useApp();
@@ -107,14 +106,14 @@ export default function Footer() {
                 </li>
               )}
               <li>
-                <UniversalLink
+                <NavLink
                   to="#"
                   onClick={handleFeedbackClick}
                   className="hover:text-primary transition-colors flex items-center gap-1"
                 >
                   <MessageSquareText className="size-3.5" />
                   意见反馈
-                </UniversalLink>
+                </NavLink>
               </li>
               <li>
                 <button
