@@ -68,21 +68,21 @@ export default function ProductCard({ product }: ProductCardProps) {
         </Badge>
       </div>
 
-      <div className="p-3 flex-1 flex flex-col gap-2">
-        <h3 className="text-sm font-medium text-foreground line-clamp-2 leading-snug min-h-[2.5rem]">
+      <div className="p-2.5 md:p-3 flex-1 flex flex-col gap-1.5 md:gap-2">
+        <h3 className="text-[13px] md:text-sm font-medium text-foreground line-clamp-2 leading-snug min-h-[2.3rem] md:min-h-[2.5rem]">
           {product.title}
         </h3>
         <div className="flex items-baseline gap-1.5">
-          <span className="text-lg font-bold text-primary">
+          <span className="text-base md:text-lg font-bold text-primary">
             {formatPrice(product.price)}
           </span>
           {product.originalPrice && (
-            <span className="text-xs text-muted-foreground line-through">
+            <span className="text-[11px] md:text-xs text-muted-foreground line-through">
               {formatPrice(product.originalPrice)}
             </span>
           )}
         </div>
-        <div className="flex items-center justify-between text-xs text-muted-foreground mt-auto">
+        <div className="flex items-center justify-between text-[11px] md:text-xs text-muted-foreground mt-auto">
           <span className="flex items-center gap-1">
             <MapPin className="size-3" />
             <span className="truncate max-w-[100px]">{product.pickupLocation}</span>

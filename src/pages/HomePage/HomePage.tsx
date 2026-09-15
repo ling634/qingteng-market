@@ -96,7 +96,7 @@ export default function HomePage() {
         {/* Hero */}
         <section className="w-full relative overflow-hidden">
           <div className="max-w-7xl mx-auto px-4 md:px-6 pt-6">
-            <div className="relative rounded-3xl overflow-hidden aspect-[3/4] sm:aspect-[16/10] md:aspect-[21/9] shadow-lg">
+            <div className="relative rounded-3xl overflow-hidden aspect-[6/5] sm:aspect-[16/10] md:aspect-[21/9] shadow-lg">
               <Image
                 src={HERO_IMG}
                 alt="青藤集市 hero"
@@ -108,20 +108,20 @@ export default function HomePage() {
                   initial={{ opacity: 0, y: 24 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ duration: 0.7, ease: 'easeOut' }}
-                  className="space-y-4 md:space-y-6"
+                  className="space-y-3 sm:space-y-4 md:space-y-6"
                 >
                   <div className="inline-flex items-center gap-1.5 bg-white/20 backdrop-blur-md text-white text-xs font-medium px-3 py-1.5 rounded-full border border-white/20">
                     <Leaf className="size-3.5" />
                     校园闲置 · 再生长一次
                   </div>
-                  <h1 className="text-3xl md:text-5xl font-bold text-white leading-tight">
+                  <h1 className="text-2xl sm:text-3xl md:text-5xl font-bold text-white leading-tight">
                     青藤集市
                     <br />
-                    <span className="text-primary-foreground/90 text-2xl md:text-3xl font-normal">
+                    <span className="text-primary-foreground/90 text-lg sm:text-2xl md:text-3xl font-normal">
                       Qingteng Market
                     </span>
                   </h1>
-                  <p className="text-white/80 text-sm md:text-base max-w-md">
+                  <p className="text-white/80 text-xs sm:text-sm md:text-base max-w-md line-clamp-2 sm:line-clamp-none">
                     专属于校园的二手闲置交易平台，纯线下自提、安全纯净，
                     让每一件旧物，都找到下一位珍惜它的人。
                   </p>

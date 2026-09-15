@@ -18,7 +18,7 @@ import { useApp } from '@/context/AppContext';
 import { cn } from '@/lib/utils';
 import { Image } from '@/components/ui/image';
 
-const NAV_ITEMS = [
+export const NAV_ITEMS = [
   { path: '/', label: '首页', icon: Home, end: true },
   { path: '/products', label: '集市', icon: ShoppingBag },
   { path: '/wanted', label: '求购', icon: Search },

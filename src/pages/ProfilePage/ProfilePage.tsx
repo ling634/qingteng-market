@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
@@ -19,6 +19,7 @@ import {
   MessageSquareText,
   LayoutDashboard,
   Loader2,
+  ChevronDown,
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
@@ -44,7 +45,7 @@ import { Image } from '@/components/ui/image';
 import { useApp } from '@/context/AppContext';
 import ProductCard from '@/components/ProductCard';
 import { toast } from 'sonner';
-import { formatPrice } from '@/lib/utils';
+import { formatPrice, cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
 import {
   fetchMyProducts,
@@ -76,8 +77,20 @@ const registerSchema = z.object({
 type LoginFormData = z.infer<typeof loginSchema>;
 type RegisterFormData = z.infer<typeof registerSchema>;
 
+/** 「我的」页七个功能区 */
+const PROFILE_TABS = [
+  { key: 'selling', label: '我的在售', icon: Package },
+  { key: 'favorites', label: '我的收藏', icon: Heart },
+  { key: 'messages', label: '我的私信', icon: MessageSquare },
+  { key: 'trades', label: '交易记录', icon: Clock },
+  { key: 'reputation', label: '信誉评价', icon: Award },
+  { key: 'feedback', label: '意见反馈', icon: MessageSquareText },
+  { key: 'settings', label: '个人资料', icon: Settings },
+];
+
 export default function ProfilePage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const {
     auth,
     login,
@@ -90,6 +103,14 @@ export default function ProfilePage() {
   const [authOpen, setAuthOpen] = useState(false);
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [authBusy, setAuthBusy] = useState(false);
+
+  // 当前功能区（支持 /profile#feedback 等 hash 直达）
+  const [tab, setTab] = useState(() => {
+    const h = location.hash.replace('#', '');
+    return PROFILE_TABS.some((t) => t.key === h) ? h : 'selling';
+  });
+  // 手机端功能区展开状态（默认收起为一行）
+  const [funcOpen, setFuncOpen] = useState(false);
 
   const [myProducts, setMyProducts] = useState<IProduct[]>([]);
   const [favProducts, setFavProducts] = useState<IProduct[]>([]);
@@ -383,26 +404,70 @@ export default function ProfilePage() {
         </motion.div>
 
         {/* Tab 内容 */}
-        <Tabs defaultValue="selling" className="w-full">
-          <TabsList className="w-full justify-start bg-transparent p-0 gap-1 overflow-x-auto border-b border-border/40 mb-5 h-auto">
-            {[
-              { key: 'selling', label: '我的在售', icon: Package },
-              { key: 'favorites', label: '我的收藏', icon: Heart },
-              { key: 'messages', label: '我的私信', icon: MessageSquare },
-              { key: 'trades', label: '交易记录', icon: Clock },
-              { key: 'reputation', label: '信誉评价', icon: Award },
-              { key: 'feedback', label: '意见反馈', icon: MessageSquareText },
-              { key: 'settings', label: '个人资料', icon: Settings },
-            ].map((tab) => {
-              const Icon = tab.icon;
+        <Tabs value={tab} onValueChange={setTab} className="w-full">
+          {/* 手机端：收起为一行（当前功能 + 展开箭头），点开为 4+3 两行图标网格 */}
+          <div className="md:hidden mb-4">
+            <button
+              onClick={() => setFuncOpen((o) => !o)}
+              className="w-full flex items-center gap-2 px-3 py-2.5 rounded-xl bg-card border border-border/60 text-sm font-medium"
+            >
+              {(() => {
+                const cur = PROFILE_TABS.find((t) => t.key === tab) ?? PROFILE_TABS[0];
+                const CurIcon = cur.icon;
+                return (
+                  <>
+                    <CurIcon className="size-4 text-primary" />
+                    <span className="flex-1 text-left">{cur.label}</span>
+                  </>
+                );
+              })()}
+              <ChevronDown
+                className={cn(
+                  'size-4 text-muted-foreground transition-transform',
+                  funcOpen && 'rotate-180',
+                )}
+              />
+            </button>
+            {funcOpen && (
+              <div className="grid grid-cols-4 gap-2 mt-2">
+                {PROFILE_TABS.map((t) => {
+                  const Icon = t.icon;
+                  const active = tab === t.key;
+                  return (
+                    <button
+                      key={t.key}
+                      onClick={() => {
+                        setTab(t.key);
+                        setFuncOpen(false);
+                      }}
+                      className={cn(
+                        'flex flex-col items-center gap-1 py-2.5 rounded-xl border text-[11px] transition-colors',
+                        active
+                          ? 'border-primary/50 bg-primary/10 text-primary font-medium'
+                          : 'border-border/60 bg-card text-muted-foreground hover:text-foreground',
+                      )}
+                    >
+                      <Icon className="size-4" />
+                      {t.label}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* PC 端：保持原有横向 Tab */}
+          <TabsList className="hidden md:flex w-full justify-start bg-transparent p-0 gap-1 overflow-x-auto border-b border-border/40 mb-5 h-auto">
+            {PROFILE_TABS.map((t) => {
+              const Icon = t.icon;
               return (
                 <TabsTrigger
-                  key={tab.key}
-                  value={tab.key}
+                  key={t.key}
+                  value={t.key}
                   className="data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:shadow-none rounded-none px-3 py-2.5 text-xs md:text-sm whitespace-nowrap gap-1.5"
                 >
                   <Icon className="size-4" />
-                  {tab.label}
+                  {t.label}
                 </TabsTrigger>
               );
             })}

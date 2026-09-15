@@ -31,7 +31,14 @@ import {
 function fmtMsgTime(iso: string): string {
   const d = new Date(iso);
   const pad = (n: number) => String(n).padStart(2, '0');
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  // 当天的消息只显示时间，非当天显示「M月D日 HH:MM」
+  const now = new Date();
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+  return sameDay ? hm : `${d.getMonth() + 1}月${d.getDate()}日 ${hm}`;
 }
 
 export default function MessagesPage() {
@@ -205,7 +212,8 @@ export default function MessagesPage() {
     );
   }, [conversations, keyword]);
 
-  const totalUnread = conversations.reduce((sum, c) => sum + (c.unreadCount > 0 ? 1 : 0), 0);
+  // 未读消息总条数（而非有未读的会话数）
+  const totalUnread = conversations.reduce((sum, c) => sum + c.unreadCount, 0);
 
   // 一键已读：清空所有会话未读
   const handleMarkAllRead = async () => {

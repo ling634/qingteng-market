@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   HelpCircle,
   Shield,
@@ -63,7 +64,7 @@ const helpSections = [
 const rulesContent = [
   {
     q: '用户准入规则',
-    a: '青藤集市仅限本校在校学生使用。所有用户必须通过学号或校园邮箱完成实名认证，方可发布商品和参与交易。我们致力于打造纯净、安全的校园二手交易环境。',
+    a: '青藤集市仅限本校在校学生使用。所有用户必须使用邮箱注册并填写本人 11 位学号完成学生身份校验，方可发布商品和参与交易。我们致力于打造纯净、安全的校园二手交易环境。',
   },
   {
     q: '商品发布规范',
@@ -90,7 +91,7 @@ const rulesContent = [
 const guideContent = [
   {
     q: '如何认证登录？',
-    a: '点击首页右上角「登录」按钮，输入您的学号或校园邮箱，系统将自动校验身份。认证通过后即可使用全部功能。',
+    a: '在「我的」页面点击登录，输入注册时使用的邮箱和密码即可。注册时需填写本人 11 位学号完成学生身份校验，认证通过后即可使用全部功能。',
   },
   {
     q: '如何发布商品？',
@@ -180,7 +181,29 @@ const contentMap: Record<string, { q: string; a: string }[]> = {
 };
 
 export default function HelpPage() {
-  const [activeSection, setActiveSection] = useState('rules');
+  const [searchParams] = useSearchParams();
+  const sectionParam = searchParams.get('section');
+  const itemParam = searchParams.get('item');
+  const validSection =
+    sectionParam && helpSections.some((s) => s.id === sectionParam)
+      ? sectionParam
+      : null;
+  const [activeSection, setActiveSection] = useState(validSection ?? 'rules');
+
+  // 页脚深链：/help?section=xxx&item=yyy → 切到对应分区、展开对应条目并滚动定位
+  useEffect(() => {
+    if (!validSection) return;
+    setActiveSection(validSection);
+    document
+      .getElementById('help-content')
+      ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [validSection, itemParam]);
+
+  const items = contentMap[activeSection];
+  const defaultOpen =
+    itemParam && items.some((it) => it.q === itemParam)
+      ? itemParam
+      : items[0]?.q;
 
   return (
     <div className="min-h-screen bg-background">
@@ -266,9 +289,10 @@ export default function HelpPage() {
               </div>
 
               <Accordion
+                key={`${activeSection}-${itemParam ?? ''}`}
                 type="single"
                 collapsible
-                defaultValue={contentMap[activeSection][0]?.q}
+                defaultValue={defaultOpen}
                 className="space-y-2"
               >
                 {contentMap[activeSection].map((item, i) => (
