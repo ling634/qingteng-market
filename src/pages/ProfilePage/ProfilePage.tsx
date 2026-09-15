@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm } from 'react-hook-form';
@@ -20,6 +20,7 @@ import {
   LayoutDashboard,
   Loader2,
   ChevronDown,
+  Trash2,
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
@@ -30,6 +31,7 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
@@ -55,6 +57,7 @@ import {
   fetchMyProfile,
   submitFeedback,
   appendFeedbackMessage,
+  deleteProduct,
   type IFeedback,
   type ITradeRecord,
 } from '@/lib/api';
@@ -76,6 +79,69 @@ const registerSchema = z.object({
 
 type LoginFormData = z.infer<typeof loginSchema>;
 type RegisterFormData = z.infer<typeof registerSchema>;
+
+/** 「我的在售」卡片包装：已售出/已下架的商品支持长按（手机）或删除按钮（PC）发起删除 */
+function MyProductCard({
+  product,
+  onRequestDelete,
+}: {
+  product: IProduct;
+  onRequestDelete: (p: IProduct) => void;
+}) {
+  const deletable = product.status !== 'on_sale';
+  const timerRef = useRef<number | null>(null);
+  const suppressClickRef = useRef(false);
+
+  const startPress = () => {
+    if (!deletable) return;
+    timerRef.current = window.setTimeout(() => {
+      // 长按触发后吞掉随之而来的 click，避免误跳转详情页
+      suppressClickRef.current = true;
+      onRequestDelete(product);
+    }, 500);
+  };
+  const cancelPress = () => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  };
+
+  return (
+    <div
+      className="relative"
+      onTouchStart={startPress}
+      onTouchEnd={cancelPress}
+      onTouchMove={cancelPress}
+      onContextMenu={(e) => {
+        if (!deletable) return;
+        e.preventDefault();
+        onRequestDelete(product);
+      }}
+      onClickCapture={(e) => {
+        if (suppressClickRef.current) {
+          suppressClickRef.current = false;
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      }}
+    >
+      <ProductCard product={product} />
+      {deletable && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onRequestDelete(product);
+          }}
+          aria-label="删除商品"
+          className="hidden md:flex absolute top-2 left-2 z-10 size-8 rounded-full bg-black/40 text-white items-center justify-center hover:bg-destructive transition-colors"
+        >
+          <Trash2 className="size-4" />
+        </button>
+      )}
+    </div>
+  );
+}
 
 /** 「我的」页七个功能区 */
 const PROFILE_TABS = [
@@ -113,6 +179,8 @@ export default function ProfilePage() {
   const [funcOpen, setFuncOpen] = useState(false);
 
   const [myProducts, setMyProducts] = useState<IProduct[]>([]);
+  const [deleteTarget, setDeleteTarget] = useState<IProduct | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [favProducts, setFavProducts] = useState<IProduct[]>([]);
   const [myFeedbacks, setMyFeedbacks] = useState<IFeedback[]>([]);
   const [myTrades, setMyTrades] = useState<ITradeRecord[]>([]);
@@ -170,6 +238,22 @@ export default function ProfilePage() {
       setMyTags([]);
     }
   }, [auth.isLoggedIn, loadMyData]);
+
+  // 删除已售出/已下架的商品（不可恢复）
+  const handleDeleteConfirm = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await deleteProduct(deleteTarget.id);
+      toast.success(`已删除「${deleteTarget.title}」`);
+      setDeleteTarget(null);
+      void loadMyData();
+    } catch {
+      toast.error('删除失败，请稍后重试');
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   // 收藏夹变化 → 拉取商品详情
   useEffect(() => {
@@ -477,11 +561,20 @@ export default function ProfilePage() {
           <TabsContent value="selling" className="mt-0">
             {auth.isLoggedIn ? (
               myProducts.length > 0 ? (
-                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 md:gap-4">
-                  {myProducts.map((p) => (
-                    <ProductCard key={p.id} product={p} />
-                  ))}
-                </div>
+                <>
+                  <p className="md:hidden text-xs text-muted-foreground mb-2">
+                    长按已售出 / 已下架的商品卡片可将其删除
+                  </p>
+                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 md:gap-4">
+                    {myProducts.map((p) => (
+                      <MyProductCard
+                        key={p.id}
+                        product={p}
+                        onRequestDelete={setDeleteTarget}
+                      />
+                    ))}
+                  </div>
+                </>
               ) : (
                 <div className="flex flex-col items-center justify-center py-16 text-center">
                   <div className="size-14 rounded-full bg-muted flex items-center justify-center mb-3">
@@ -758,6 +851,34 @@ export default function ProfilePage() {
       </div>
 
       {/* 登录/注册弹窗 */}
+      {/* 删除商品确认弹窗 */}
+      <Dialog
+        open={!!deleteTarget}
+        onOpenChange={(o) => !o && setDeleteTarget(null)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>删除商品</DialogTitle>
+            <DialogDescription>
+              确定删除「{deleteTarget?.title}」吗？删除后不可恢复，
+              相关收藏会被移除，历史会话和交易记录保留。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="secondary" onClick={() => setDeleteTarget(null)}>
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={deleting}
+              onClick={() => void handleDeleteConfirm()}
+            >
+              {deleting ? '删除中...' : '确认删除'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={authOpen} onOpenChange={setAuthOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>

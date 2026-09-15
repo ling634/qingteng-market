@@ -69,7 +69,7 @@ export default function ProductCard({ product }: ProductCardProps) {
       </div>
 
       <div className="p-2.5 md:p-3 flex-1 flex flex-col gap-1.5 md:gap-2">
-        <h3 className="text-[13px] md:text-sm font-medium text-foreground line-clamp-2 leading-snug min-h-[2.3rem] md:min-h-[2.5rem]">
+        <h3 className="text-[13px] md:text-sm font-medium text-foreground truncate md:whitespace-normal md:line-clamp-2 leading-snug md:min-h-[2.5rem]">
           {product.title}
         </h3>
         <div className="flex items-baseline gap-1.5">

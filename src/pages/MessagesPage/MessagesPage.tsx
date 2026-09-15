@@ -54,7 +54,7 @@ export default function MessagesPage() {
   const [keyword, setKeyword] = useState('');
   const [showListMobile, setShowListMobile] = useState(true);
   const [sending, setSending] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messageListRef = useRef<HTMLDivElement>(null);
 
   const activeIdRef = useRef<string | null>(null);
   activeIdRef.current = activeId;
@@ -193,9 +193,26 @@ export default function MessagesPage() {
     };
   }, [myId, loadConversations]);
 
+  // 新消息时只滚动消息列表容器内部到底部（瞬间定位，不带动整页滚动）
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    const el = messageListRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [messages, activeId]);
+
+  // 软键盘适配：把可视高度写入 CSS 变量（iOS 键盘弹出时 visualViewport 会缩小）
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const onResize = () => {
+      document.documentElement.style.setProperty('--vvh', `${vv.height}px`);
+    };
+    onResize();
+    vv.addEventListener('resize', onResize);
+    return () => {
+      vv.removeEventListener('resize', onResize);
+      document.documentElement.style.removeProperty('--vvh');
+    };
+  }, []);
 
   const activeConv = useMemo(
     () => conversations.find((c) => c.id === activeId) || null,
@@ -272,7 +289,10 @@ export default function MessagesPage() {
 
   return (
     <div className="min-h-screen bg-background">
-      <div className="max-w-6xl mx-auto px-0 md:px-6 h-[calc(100vh-4rem)] flex flex-col md:flex-row md:py-6">
+      <div
+        className="max-w-6xl mx-auto px-0 md:px-6 flex flex-col md:flex-row md:py-6"
+        style={{ height: 'calc(var(--vvh, 100dvh) - 4rem)' }}
+      >
         {/* 会话列表 */}
         <div
           className={cn(
@@ -436,7 +456,10 @@ export default function MessagesPage() {
               </div>
 
               {/* 消息列表 */}
-              <div className="flex-1 overflow-y-auto px-4 py-2 space-y-3 bg-gradient-to-b from-muted/20 to-transparent">
+              <div
+                ref={messageListRef}
+                className="flex-1 overflow-y-auto px-4 py-2 space-y-3 bg-gradient-to-b from-muted/20 to-transparent"
+              >
                 <AnimatePresence>
                   {messages.map((msg) => {
                     const isMe = msg.senderId === myId;
@@ -499,7 +522,6 @@ export default function MessagesPage() {
                     );
                   })}
                 </AnimatePresence>
-                <div ref={messagesEndRef} />
               </div>
 
               {/* 输入区 */}

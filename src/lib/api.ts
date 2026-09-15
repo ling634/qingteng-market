@@ -286,6 +286,12 @@ export async function setProductStatus(
   if (error) throw error;
 }
 
+/** 删除商品（RLS：卖家本人或管理员；收藏级联删除，会话/交易记录保留快照） */
+export async function deleteProduct(id: string): Promise<void> {
+  const { error } = await supabase.from('products').delete().eq('id', id);
+  if (error) throw error;
+}
+
 export async function setProductTop(
   id: string,
   top: boolean,

@@ -1,5 +1,4 @@
 import { NavLink, useNavigate } from 'react-router-dom';
-import { useState } from 'react';
 import {
   Home,
   ShoppingBag,
@@ -7,13 +6,9 @@ import {
   Plus,
   MessageSquare,
   User,
-  Menu,
-  X,
   Leaf,
-  Shield,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Sheet, SheetContent, SheetTrigger, SheetClose } from '@/components/ui/sheet';
 import { useApp } from '@/context/AppContext';
 import { cn } from '@/lib/utils';
 import { Image } from '@/components/ui/image';
@@ -29,7 +24,6 @@ export const NAV_ITEMS = [
 export default function Header() {
   const navigate = useNavigate();
   const { auth, unreadMessages } = useApp();
-  const [open, setOpen] = useState(false);
 
   const unreadBadge = (path: string) =>
     path === '/messages' && unreadMessages > 0 ? (
@@ -84,104 +78,15 @@ export default function Header() {
 
         {/* Actions */}
         <div className="flex items-center gap-2">
+          {/* 发布入口：全端常驻（手机端在右上角，PC 端在导航栏右侧） */}
           <Button
             onClick={() => navigate('/publish')}
             size="sm"
-            className="hidden sm:inline-flex gap-1.5 shadow-sm"
+            className="inline-flex gap-1.5 shadow-sm"
           >
             <Plus className="size-4" />
             发布
           </Button>
-
-          {/* Mobile menu */}
-          <Sheet open={open} onOpenChange={setOpen}>
-            <SheetTrigger asChild>
-              <Button variant="ghost" size="icon" className="md:hidden">
-                <Menu className="size-5" />
-              </Button>
-            </SheetTrigger>
-            <SheetContent side="right" className="w-[280px] pr-0">
-              <div className="flex flex-col h-full">
-                <div className="flex items-center gap-2 pb-4 border-b border-border">
-                  <Leaf className="size-5 text-primary" />
-                  <span className="font-bold">青藤集市</span>
-                </div>
-                <nav className="flex flex-col gap-1 py-4">
-                  {NAV_ITEMS.map((item) => {
-                    const Icon = item.icon;
-                    return (
-                      <SheetClose asChild key={item.path}>
-                        <NavLink
-                          to={item.path}
-                          end={item.end}
-                          onClick={() => setOpen(false)}
-                          className={({ isActive }) =>
-                            cn(
-                              'flex items-center gap-3 px-3 py-3 rounded-lg text-sm font-medium',
-                              isActive
-                                ? 'text-primary bg-primary/10'
-                                : 'text-muted-foreground hover:text-foreground hover:bg-accent/50',
-                            )
-                          }
-                        >
-                          <span className="relative">
-                            <Icon className="size-5" />
-                            {unreadBadge(item.path)}
-                          </span>
-                          {item.label}
-                        </NavLink>
-                      </SheetClose>
-                    );
-                  })}
-                </nav>
-                 <div className="mt-auto pt-4 border-t border-border space-y-2">
-                   {auth.isAdmin && (
-                     <SheetClose asChild>
-                       <Button
-                         variant="secondary"
-                         size="sm"
-                         onClick={() => navigate('/admin')}
-                         className="w-full"
-                       >
-                         <Shield className="size-4 mr-1" />
-                         管理后台
-                       </Button>
-                     </SheetClose>
-                   )}
-                   {auth.isLoggedIn ? (
-                     <div className="flex items-center gap-3 px-2 py-2">
-                       <Image
-                         src={auth.avatar}
-                         alt=""
-                         className="size-10 rounded-full object-cover"
-                       />
-                       <div className="flex-1 min-w-0">
-                         <div className="font-medium text-sm truncate">
-                           {auth.nickname}
-                         </div>
-                         <div className="text-xs text-muted-foreground">
-                           学号 {auth.studentId}
-                           {auth.isAdmin && <span className="text-primary"> · 管理员</span>}
-                         </div>
-                       </div>
-                     </div>
-                   ) : (
-                     <SheetClose asChild>
-                       <Button
-                         onClick={() => navigate('/profile')}
-                         className="w-full"
-                       >
-                         登录 / 注册
-                       </Button>
-                     </SheetClose>
-                  )}
-                </div>
-              </div>
-              <div className="sr-only">
-                <X />
-              </div>
-            </SheetContent>
-          </Sheet>
 
           {/* User avatar (desktop) */}
           <NavLink
