@@ -199,17 +199,21 @@ export default function MessagesPage() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages, activeId]);
 
-  // 软键盘适配：把可视高度写入 CSS 变量（iOS 键盘弹出时 visualViewport 会缩小）
+  // 软键盘适配：把可视高度写入 CSS 变量（iOS 键盘弹出时 visualViewport 会缩小），
+  // 并强制窗口回到顶部，抵消浏览器为显示聚焦输入框而做的自动滚页（否则输入框与键盘之间会出现空白）
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
     const onResize = () => {
       document.documentElement.style.setProperty('--vvh', `${vv.height}px`);
+      window.scrollTo(0, 0);
     };
     onResize();
     vv.addEventListener('resize', onResize);
+    vv.addEventListener('scroll', onResize);
     return () => {
       vv.removeEventListener('resize', onResize);
+      vv.removeEventListener('scroll', onResize);
       document.documentElement.style.removeProperty('--vvh');
     };
   }, []);
@@ -288,11 +292,11 @@ export default function MessagesPage() {
   }
 
   return (
-    <div className="min-h-screen bg-background">
-      <div
-        className="max-w-6xl mx-auto px-0 md:px-6 flex flex-col md:flex-row md:py-6"
-        style={{ height: 'calc(var(--vvh, 100dvh) - 4rem)' }}
-      >
+    // 注意：外层不能再加 min-h-screen —— 页面一旦比可视区高，键盘弹出时浏览器会自动滚页，
+    // 导致输入框与键盘之间出现空白。整页高度必须严格等于可视高度。
+    <div className="bg-background">
+      {/* 手机端高度 = 可视高度 - 顶栏(4rem) - 底部导航(52px)；PC 端无底部导航，仅减顶栏 */}
+      <div className="max-w-6xl mx-auto px-0 md:px-6 flex flex-col md:flex-row md:py-6 h-[calc(var(--vvh,100dvh)-4rem-52px)] md:h-[calc(100dvh-4rem)]">
         {/* 会话列表 */}
         <div
           className={cn(

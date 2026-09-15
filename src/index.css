@@ -3,3 +3,12 @@
 @import "tw-animate-css";
 @import "./tailwind-theme.css";
 @import "./typography.css";
+
+/* 防止任何元素意外撑宽页面：整页禁止横向滚动（overflow-x: clip 不会破坏 sticky 定位），
+   同时抑制下拉刷新与侧滑返回等浏览器 overscroll 手势 */
+html,
+body,
+#root {
+  overflow-x: clip;
+  overscroll-behavior: none;
+}

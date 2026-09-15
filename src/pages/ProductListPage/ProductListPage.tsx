@@ -206,7 +206,7 @@ export default function ProductListPage() {
           <Tabs
             value={category}
             onValueChange={handleCategoryChange}
-            className="w-full flex-1"
+            className="w-full flex-1 min-w-0"
           >
             <TabsList className="bg-transparent p-0 h-auto gap-1 overflow-x-auto flex-nowrap w-full justify-start">
               {CATEGORIES.map((cat) => (

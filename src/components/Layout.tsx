@@ -5,8 +5,8 @@ import { AppProvider, useApp } from '@/context/AppContext';
 import { Toaster } from '@/components/ui/sonner';
 import { cn } from '@/lib/utils';
 
-/** 这些页面底部已有固定操作栏 / 输入框，底部导航会遮挡，故隐藏 */
-const HIDE_BOTTOM_PATTERNS = [/^\/messages/, /^\/products\/[^/]+/, /^\/publish/, /^\/admin/];
+/** 这些页面底部已有固定操作栏，底部导航会遮挡，故隐藏（消息页按需求常驻显示） */
+const HIDE_BOTTOM_PATTERNS = [/^\/products\/[^/]+/, /^\/publish/, /^\/admin/];
 
 /** 私信页（手机端）不展示 Footer，避免聊天区下方出现大段无关内容 */
 const HIDE_FOOTER_MOBILE_PATTERNS = [/^\/messages/];
