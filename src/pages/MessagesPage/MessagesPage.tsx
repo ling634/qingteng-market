@@ -575,7 +575,7 @@ export default function MessagesPage() {
                     {activeConv.otherNickname}
                   </div>
                   <div className="text-xs text-muted-foreground">
-                    {activeConv.otherVerified ? '✓ 已认证学生' : '未认证'}
+                    {activeConv.otherVerified ? '✓ 已认证' : '未认证'}
                   </div>
                 </div>
                 {/* 去浇灌：买家查看卖家收款码（卖家侧不显示） */}

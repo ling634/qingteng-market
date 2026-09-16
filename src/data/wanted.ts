@@ -6,6 +6,7 @@ export interface IWanted {
   budget: string
   description: string
   buyerId: string
-  status: 'open' | 'closed'
+  /** 求购中 open → 已预订 reserved → 已买到 done；下架 closed */
+  status: 'open' | 'reserved' | 'done' | 'closed'
   createdAt: string
 }

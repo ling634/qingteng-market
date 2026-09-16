@@ -1,5 +1,5 @@
-import { useState, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useRef, useEffect } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
@@ -43,7 +43,7 @@ import { CONDITIONS, CATEGORIES } from '@/data/categories';
 import { toast } from 'sonner';
 import { Image } from '@/components/ui/image';
 import { compressImage, makeThumbnail, uploadProductImages } from '@/lib/image';
-import { insertProduct } from '@/lib/api';
+import { fetchProductById, insertProduct, updateProduct } from '@/lib/api';
 
 const publishSchema = z.object({
   category: z.string().min(1, '请选择商品分类'),
@@ -74,8 +74,13 @@ interface PendingImage {
 
 export default function PublishPage() {
   const navigate = useNavigate();
-  const { auth } = useApp();
+  const [searchParams] = useSearchParams();
+  const editId = searchParams.get('edit');
+  const { auth, authLoading } = useApp();
   const [images, setImages] = useState<PendingImage[]>([]);
+  // 编辑模式下保留的已有图片（URL 形式，与 images 新传图片并存）
+  const [existingImages, setExistingImages] = useState<{ url: string; thumb: string }[]>([]);
+  const [editLoading, setEditLoading] = useState(false);
   const [compressing, setCompressing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [uploadProgress, setUploadProgress] = useState('');
@@ -95,9 +100,47 @@ export default function PublishPage() {
     },
   });
 
+  // 编辑模式：加载商品并预填表单（仅本人可编辑）
+  useEffect(() => {
+    if (!editId || authLoading) return;
+    setEditLoading(true);
+    fetchProductById(editId)
+      .then((res) => {
+        if (!res) {
+          toast.error('商品不存在或已删除');
+          navigate('/profile');
+          return;
+        }
+        const p = res.product;
+        if (p.sellerId !== auth.userId) {
+          toast.error('只能编辑自己发布的商品');
+          navigate(`/products/${editId}`);
+          return;
+        }
+        form.reset({
+          category: p.category,
+          title: p.title,
+          price: String(p.price),
+          originalPrice: p.originalPrice ? String(p.originalPrice) : '',
+          condition: p.condition,
+          pickupLocation: p.pickupLocation,
+          description: p.description ?? '',
+        });
+        setExistingImages(
+          p.images.map((url, i) => ({ url, thumb: p.thumbs[i] ?? url })),
+        );
+      })
+      .catch(() => {
+        toast.error('加载商品失败，请稍后重试');
+        navigate('/profile');
+      })
+      .finally(() => setEditLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editId, authLoading, auth.userId]);
+
   const handleFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
-    const remaining = MAX_IMAGES - images.length;
+    const remaining = MAX_IMAGES - images.length - existingImages.length;
     if (remaining <= 0) {
       toast.error(`最多上传 ${MAX_IMAGES} 张图片`);
       return;
@@ -129,7 +172,7 @@ export default function PublishPage() {
   };
 
   const onSubmit = async (values: PublishFormData) => {
-    if (images.length === 0) {
+    if (images.length + existingImages.length === 0) {
       toast.error('请至少上传一张商品图片');
       return;
     }
@@ -140,13 +183,18 @@ export default function PublishPage() {
     }
     setSubmitting(true);
     try {
-      setUploadProgress(`正在上传图片（共 ${images.length} 张）...`);
-      const { images: imageUrls, thumbs } = await uploadProductImages(
-        auth.userId,
-        images.map((i) => ({ full: i.full, thumb: i.thumb })),
-      );
-      setUploadProgress('正在发布...');
-      await insertProduct(auth.userId, {
+      let imageUrls = existingImages.map((i) => i.url);
+      let thumbs = existingImages.map((i) => i.thumb);
+      if (images.length > 0) {
+        setUploadProgress(`正在上传图片（共 ${images.length} 张）...`);
+        const uploaded = await uploadProductImages(
+          auth.userId,
+          images.map((i) => ({ full: i.full, thumb: i.thumb })),
+        );
+        imageUrls = [...imageUrls, ...uploaded.images];
+        thumbs = [...thumbs, ...uploaded.thumbs];
+      }
+      const input = {
         category: values.category,
         title: values.title,
         price: Number(values.price),
@@ -156,10 +204,23 @@ export default function PublishPage() {
         thumbs,
         description: values.description || '',
         pickupLocation: values.pickupLocation,
-      });
+      };
+      if (editId) {
+        setUploadProgress('正在保存...');
+        await updateProduct(editId, input);
+      } else {
+        setUploadProgress('正在发布...');
+        await insertProduct(auth.userId, input);
+      }
       setSuccessOpen(true);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : '发布失败，请稍后重试');
+      toast.error(
+        err instanceof Error
+          ? err.message
+          : editId
+            ? '保存失败，请稍后重试'
+            : '发布失败，请稍后重试',
+      );
     } finally {
       setSubmitting(false);
       setUploadProgress('');
@@ -179,7 +240,7 @@ export default function PublishPage() {
           >
             <ArrowLeft className="size-4" />
           </Button>
-          <h1 className="text-base font-semibold">发布闲置</h1>
+          <h1 className="text-base font-semibold">{editId ? '编辑闲置' : '发布闲置'}</h1>
         </div>
       </div>
 
@@ -201,6 +262,29 @@ export default function PublishPage() {
                   </span>
                 </FormLabel>
                 <div className="mt-2 grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2">
+                  {existingImages.map((img, i) => (
+                    <div
+                      key={`old-${i}`}
+                      className="relative aspect-square rounded-lg overflow-hidden bg-muted border border-border/60 group"
+                    >
+                      <Image src={img.url} alt="" className="w-full h-full object-cover" />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setExistingImages((prev) => prev.filter((_, x) => x !== i))
+                        }
+                        className="!absolute top-1 right-1 z-10 h-6 w-6 rounded-full bg-black/60 text-white flex items-center justify-center opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity"
+                        aria-label="删除图片"
+                      >
+                        <X className="size-3" />
+                      </button>
+                      {i === 0 && (
+                        <div className="absolute bottom-1 left-1 bg-primary text-white text-[10px] px-1.5 py-0.5 rounded">
+                          封面
+                        </div>
+                      )}
+                    </div>
+                  ))}
                   {images.map((img, i) => (
                     <div
                       key={i}
@@ -215,14 +299,14 @@ export default function PublishPage() {
                       >
                         <X className="size-3" />
                       </button>
-                      {i === 0 && (
+                      {i === 0 && existingImages.length === 0 && (
                         <div className="absolute bottom-1 left-1 bg-primary text-white text-[10px] px-1.5 py-0.5 rounded">
                           封面
                         </div>
                       )}
                     </div>
                   ))}
-                  {images.length < MAX_IMAGES && (
+                  {images.length + existingImages.length < MAX_IMAGES && (
                     <button
                       type="button"
                       onClick={() => fileInputRef.current?.click()}
@@ -417,8 +501,16 @@ export default function PublishPage() {
                 </div>
               </div>
 
-              <Button type="submit" className="w-full h-12 text-base" disabled={submitting || compressing || images.length === 0}>
-                {compressing ? '图片处理中...' : submitting ? uploadProgress || '发布中...' : '立即发布'}
+              <Button type="submit" className="w-full h-12 text-base" disabled={submitting || compressing || editLoading || images.length + existingImages.length === 0}>
+                {compressing
+                  ? '图片处理中...'
+                  : submitting
+                    ? uploadProgress || (editId ? '保存中...' : '发布中...')
+                    : editLoading
+                      ? '加载商品中...'
+                      : editId
+                        ? '保存修改'
+                        : '立即发布'}
               </Button>
             </form>
           </Form>
@@ -429,9 +521,11 @@ export default function PublishPage() {
       <Dialog open={successOpen} onOpenChange={setSuccessOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle className="text-center text-xl">发布成功！</DialogTitle>
+            <DialogTitle className="text-center text-xl">
+              {editId ? '保存成功！' : '发布成功！'}
+            </DialogTitle>
             <DialogDescription className="text-center">
-              你的商品已上架到青藤集市
+              {editId ? '商品信息已更新，发布时间已刷新' : '你的商品已上架到青藤集市'}
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col items-center py-4">
@@ -457,10 +551,10 @@ export default function PublishPage() {
               className="flex-1"
               onClick={() => {
                 setSuccessOpen(false);
-                navigate('/products');
+                navigate(editId ? `/products/${editId}` : '/products');
               }}
             >
-              逛逛集市
+              {editId ? '查看商品' : '逛逛集市'}
             </Button>
           </DialogFooter>
         </DialogContent>

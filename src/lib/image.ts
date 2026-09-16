@@ -132,6 +132,35 @@ export async function uploadMiscImage(
   );
 }
 
+/** 上传认证证件照（私有桶 verification，返回存储路径而非公开 URL） */
+export async function uploadVerificationImage(
+  userId: string,
+  file: File,
+): Promise<string> {
+  const blob = await compressImage(file, FULL_MAX_SIZE);
+  const path = `${userId}/${crypto.randomUUID()}.jpg`;
+  const { error } = await supabase.storage.from('verification').upload(path, blob, {
+    contentType: 'image/jpeg',
+    upsert: false,
+  });
+  if (error) throw new Error(`图片上传失败：${error.message}`);
+  return path;
+}
+
+/** 管理员审核时查看证件照：生成 5 分钟有效的签名 URL */
+export async function createVerificationSignedUrl(path: string): Promise<string> {
+  const { data, error } = await supabase.storage
+    .from('verification')
+    .createSignedUrl(path, 300);
+  if (error) throw error;
+  return data.signedUrl;
+}
+
+/** 删除认证证件照（审核通过后清理，保护隐私） */
+export async function deleteVerificationImage(path: string): Promise<void> {
+  await supabase.storage.from('verification').remove([path]);
+}
+
 export function dataUrlToBlob(dataUrl: string): Blob {
   const [head, body] = dataUrl.split(',');
   const mime = head.match(/data:(.*?);/)?.[1] || 'image/jpeg';

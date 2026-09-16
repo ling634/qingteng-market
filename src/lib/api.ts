@@ -285,6 +285,29 @@ export async function insertProduct(
   if (error) throw error;
 }
 
+/** 编辑闲置：更新全部字段，发布时间同步刷新为当前时间（回到列表前列） */
+export async function updateProduct(
+  id: string,
+  input: NewProductInput,
+): Promise<void> {
+  const { error } = await supabase
+    .from('products')
+    .update({
+      title: input.title,
+      price: input.price,
+      original_price: input.originalPrice ?? null,
+      category: input.category,
+      condition: input.condition,
+      description: input.description,
+      pickup_location: input.pickupLocation,
+      images: input.images,
+      thumbs: input.thumbs,
+      created_at: new Date().toISOString(),
+    })
+    .eq('id', id);
+  if (error) throw error;
+}
+
 export async function setProductStatus(
   id: string,
   status: IProduct['status'],
@@ -347,7 +370,9 @@ export async function fetchWantedPage(
     .select('*', { count: 'exact' })
     .order('created_at', { ascending: false });
 
-  if (q.tab === 'open' || q.tab === 'closed') query = query.eq('status', q.tab);
+  if (q.tab === 'open') query = query.eq('status', 'open');
+  // 「已完成」口径：已预订 + 已买到 + 已下架
+  if (q.tab === 'closed') query = query.in('status', ['reserved', 'done', 'closed']);
   if (q.category && q.category !== 'all')
     query = query.eq('category', q.category);
   const kw = q.keyword?.trim();
@@ -377,6 +402,33 @@ export async function insertWanted(
     budget: input.budget,
     description: input.description,
   });
+  if (error) throw error;
+}
+
+/** 「我的求购」列表 */
+export async function fetchMyWanted(userId: string): Promise<IWanted[]> {
+  const { data, error } = await supabase
+    .from('wanted')
+    .select('*')
+    .eq('buyer_id', userId)
+    .order('created_at', { ascending: false })
+    .limit(100);
+  if (error) throw error;
+  return (data ?? []).map(mapWanted);
+}
+
+/** 求购状态流转：求购中 open → 已预订 reserved → 已买到 done；下架 closed */
+export async function setWantedStatus(
+  id: string,
+  status: IWanted['status'],
+): Promise<void> {
+  const { error } = await supabase.from('wanted').update({ status }).eq('id', id);
+  if (error) throw error;
+}
+
+/** 删除求购（已买到/已下架） */
+export async function deleteWanted(id: string): Promise<void> {
+  const { error } = await supabase.from('wanted').delete().eq('id', id);
   if (error) throw error;
 }
 
@@ -1045,9 +1097,9 @@ export async function markAllMessagesRead(userId: string): Promise<void> {
   if (error) throw error;
 }
 
-/** 管理员待处理条数：未读意见反馈 + 未读举报（RLS 限定仅管理员可查，非管理员调用会报错，由调用方限定） */
+/** 管理员待处理条数：未读意见反馈 + 未读举报 + 待审核认证（RLS 限定仅管理员可查，非管理员调用会报错，由调用方限定） */
 export async function fetchUnreadAdminCount(): Promise<number> {
-  const [fb, rp] = await Promise.all([
+  const [fb, rp, vr] = await Promise.all([
     supabase
       .from('feedbacks')
       .select('id', { count: 'exact', head: true })
@@ -1056,10 +1108,15 @@ export async function fetchUnreadAdminCount(): Promise<number> {
       .from('reports')
       .select('id', { count: 'exact', head: true })
       .is('read_at', null),
+    supabase
+      .from('verification_requests')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'pending'),
   ]);
   if (fb.error) throw fb.error;
   if (rp.error) throw rp.error;
-  return (fb.count ?? 0) + (rp.count ?? 0);
+  if (vr.error) throw vr.error;
+  return (fb.count ?? 0) + (rp.count ?? 0) + (vr.count ?? 0);
 }
 
 // ---------------------------------------------------------------
@@ -1270,21 +1327,137 @@ export async function sendSystemMessage(conversationId: string, senderId: string
 }
 
 // ---------------------------------------------------------------
-// 注册可用性检查（RPC，匿名可调用）
+// 昵称+密码认证体系（patch_06）
+// Supabase Auth 底层要求邮箱：注册时用「u_+昵称UTF8十六进制@qingteng.local」
+// 合成邮箱，登录时通过 RPC 按昵称查回邮箱（改昵称后仍可登录）
 // ---------------------------------------------------------------
 
-export async function checkRegistration(
-  nickname: string,
-  studentId: string,
-): Promise<{ nicknameTaken: boolean; studentIdTaken: boolean }> {
-  const { data, error } = await supabase.rpc('check_registration', {
-    p_nickname: nickname,
-    p_student_id: studentId,
+export function nicknameToEmail(nickname: string): string {
+  const bytes = new TextEncoder().encode(nickname.trim());
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  return `u_${hex}@qingteng.local`;
+}
+
+/** 昵称是否已被占用（匿名可调用） */
+export async function checkNickname(nickname: string): Promise<boolean> {
+  const { data, error } = await supabase.rpc('check_nickname', {
+    p_nickname: nickname.trim(),
   });
-  if (error) return { nicknameTaken: false, studentIdTaken: false };
-  const row = Array.isArray(data) ? data[0] : data;
+  if (error) return false;
+  return !!data;
+}
+
+/** 按昵称查登录邮箱（合成邮箱，无隐私泄漏）；昵称不存在返回 null */
+export async function getLoginEmail(nickname: string): Promise<string | null> {
+  const { data, error } = await supabase.rpc('get_login_email', {
+    p_nickname: nickname.trim(),
+  });
+  if (error) return null;
+  return (data as string | null) ?? null;
+}
+
+// ---------------------------------------------------------------
+// 认证申请（认证后置：上传证件照 → 管理员人工审核）
+// ---------------------------------------------------------------
+
+export type VerificationMethod = 'student_card' | 'campus_card';
+export type VerificationStatus = 'pending' | 'approved' | 'rejected';
+
+export interface IVerificationRequest {
+  id: string;
+  userId: string;
+  method: VerificationMethod;
+  imagePath: string;
+  status: VerificationStatus;
+  createdAt: string;
+}
+
+function mapVerification(row: any): IVerificationRequest {
   return {
-    nicknameTaken: row?.nickname_taken ?? false,
-    studentIdTaken: row?.student_id_taken ?? false,
+    id: row.id,
+    userId: row.user_id,
+    method: row.method,
+    imagePath: row.image_path,
+    status: row.status,
+    createdAt: fmtTime(row.created_at),
   };
+}
+
+/** 我最近一条认证申请（决定「申请成为认证园丁」按钮状态） */
+export async function fetchMyLatestVerification(
+  userId: string,
+): Promise<IVerificationRequest | null> {
+  const { data, error } = await supabase
+    .from('verification_requests')
+    .select('*')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? mapVerification(data) : null;
+}
+
+/** 提交认证申请（同一用户同时只能有一条待审核，数据库唯一索引兜底） */
+export async function submitVerification(
+  userId: string,
+  method: VerificationMethod,
+  imagePath: string,
+): Promise<void> {
+  const { error } = await supabase.from('verification_requests').insert({
+    user_id: userId,
+    method,
+    image_path: imagePath,
+  });
+  if (error) {
+    if (error.code === '23505') throw new Error('已有一条待审核的申请，请耐心等待');
+    throw error;
+  }
+}
+
+export interface IVerificationAdmin extends IVerificationRequest {
+  nickname: string;
+  avatar: string;
+}
+
+/** 管理员：待审核认证列表 */
+export async function fetchPendingVerifications(): Promise<IVerificationAdmin[]> {
+  const { data, error } = await supabase
+    .from('verification_requests')
+    .select('*, user:profiles!verification_requests_user_id_fkey(nickname, avatar_url)')
+    .eq('status', 'pending')
+    .order('created_at', { ascending: true })
+    .limit(100);
+  if (error) throw error;
+  return (data ?? []).map((row: any) => {
+    const user = Array.isArray(row.user) ? row.user[0] : row.user;
+    return {
+      ...mapVerification(row),
+      nickname: user?.nickname ?? '同学',
+      avatar: user?.avatar_url || DEFAULT_AVATAR,
+    };
+  });
+}
+
+/** 管理员：审核认证（通过后置 verified；证件照由调用方另行删除） */
+export async function reviewVerification(
+  id: string,
+  userId: string,
+  approve: boolean,
+): Promise<void> {
+  const { error } = await supabase
+    .from('verification_requests')
+    .update({
+      status: approve ? 'approved' : 'rejected',
+      reviewed_at: new Date().toISOString(),
+    })
+    .eq('id', id);
+  if (error) throw error;
+  if (approve) {
+    const { error: pErr } = await supabase
+      .from('profiles')
+      .update({ verified: true })
+      .eq('id', userId);
+    if (pErr) throw pErr;
+  }
 }

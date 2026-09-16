@@ -22,6 +22,7 @@ import {
   ExternalLink,
   CheckCheck,
   Trash2,
+  BadgeCheck,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -86,10 +87,17 @@ import {
   markAllReportsRead,
   deleteFeedbackAdmin,
   deleteReportAdmin,
+  fetchPendingVerifications,
+  reviewVerification,
   type IFeedback,
   type IReport,
+  type IVerificationAdmin,
 } from '@/lib/api';
-import { uploadMiscImage } from '@/lib/image';
+import {
+  uploadMiscImage,
+  createVerificationSignedUrl,
+  deleteVerificationImage,
+} from '@/lib/image';
 
 export default function AdminPage() {
   const navigate = useNavigate();
@@ -110,20 +118,23 @@ export default function AdminPage() {
   const [users, setUsers] = useState<IUser[]>([]);
   const [feedbacks, setFeedbacks] = useState<IFeedback[]>([]);
   const [reports, setReports] = useState<IReport[]>([]);
+  const [verifications, setVerifications] = useState<IVerificationAdmin[]>([]);
   const [dataLoading, setDataLoading] = useState(false);
 
   const loadAll = useCallback(async () => {
     setDataLoading(true);
-    const [p, u, f, r] = await Promise.all([
+    const [p, u, f, r, v] = await Promise.all([
       fetchAllProductsAdmin().catch(() => [] as IProduct[]),
       fetchAllUsersAdmin().catch(() => [] as IUser[]),
       fetchAllFeedbacksAdmin().catch(() => [] as IFeedback[]),
       fetchReportsAdmin().catch(() => [] as IReport[]),
+      fetchPendingVerifications().catch(() => [] as IVerificationAdmin[]),
     ]);
     setProducts(p);
     setUsers(u);
     setFeedbacks(f);
     setReports(r);
+    setVerifications(v);
     setDataLoading(false);
   }, []);
 
@@ -143,6 +154,8 @@ export default function AdminPage() {
     fetchAllFeedbacksAdmin().then(setFeedbacks).catch(() => {});
   const reloadReports = () =>
     fetchReportsAdmin().then(setReports).catch(() => {});
+  const reloadVerifications = () =>
+    fetchPendingVerifications().then(setVerifications).catch(() => {});
 
   const filteredProducts = useMemo(() => {
     return products.filter((p) => {
@@ -165,6 +178,7 @@ export default function AdminPage() {
     pendingFeedbacks: feedbacks.filter((f) => f.status === 'pending').length,
     unreadFeedbacks: feedbacks.filter((f) => !f.readAt).length,
     unreadReports: reports.filter((r) => !r.readAt).length,
+    pendingVerifications: verifications.length,
   };
 
   // 管理员：一键已读全部反馈工单
@@ -284,6 +298,7 @@ export default function AdminPage() {
     { key: 'users', label: '用户管理', icon: Users },
     { key: 'feedback', label: '意见反馈', icon: MessageSquareText, badge: stats.unreadFeedbacks },
     { key: 'reports', label: '举报记录', icon: Shield, badge: stats.unreadReports },
+    { key: 'verification', label: '认证审核', icon: BadgeCheck, badge: stats.pendingVerifications },
   ];
 
   const renderSidebar = () => (
@@ -1139,6 +1154,16 @@ export default function AdminPage() {
               }}
             />
           )}
+
+          {activeTab === 'verification' && (
+            <VerificationsPanel
+              items={verifications}
+              onChanged={() => {
+                void reloadVerifications();
+                void reloadUsers();
+              }}
+            />
+          )}
         </div>
       </div>
 
@@ -1170,6 +1195,157 @@ export default function AdminPage() {
               {deletingFeedback ? '删除中...' : '确认删除'}
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+/** 认证审核：查看证件照（私有桶签名 URL）→ 人工通过 / 拒绝，结果私信通知用户，证件照审核后即删 */
+function VerificationsPanel({
+  items,
+  onChanged,
+}: {
+  items: IVerificationAdmin[];
+  onChanged: () => void;
+}) {
+  const { auth } = useApp();
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [imageLoading, setImageLoading] = useState(false);
+  const [acting, setActing] = useState<string | null>(null);
+
+  // 点击「查看证件照」：按需生成 5 分钟有效的签名 URL
+  const handleViewImage = async (v: IVerificationAdmin) => {
+    setImageLoading(true);
+    try {
+      const url = await createVerificationSignedUrl(v.imagePath);
+      setImageUrl(url);
+    } catch {
+      toast.error('图片加载失败，请稍后重试');
+    } finally {
+      setImageLoading(false);
+    }
+  };
+
+  const handleReview = async (v: IVerificationAdmin, approve: boolean) => {
+    if (acting) return;
+    setActing(v.id);
+    try {
+      await reviewVerification(v.id, v.userId, approve);
+      // 审核完成后立即删除证件照，保护用户隐私
+      await deleteVerificationImage(v.imagePath).catch(() => {});
+      // 站内私信通知审核结果
+      const convId = await getOrCreateConversation(null, auth.userId, v.userId);
+      await sendMessage(
+        convId,
+        auth.userId,
+        approve
+          ? '【平台通知】恭喜你通过了园丁认证！你的账号已获得「已认证」标识，感谢你的配合。'
+          : '【平台通知】很抱歉，你的认证申请未通过。请确认证件照片清晰、信息完整（注意遮挡学号与身份证号）后，到「我的」页面重新提交申请。',
+      );
+      toast.success(approve ? '已通过认证' : '已拒绝该申请');
+      onChanged();
+    } catch {
+      toast.error('操作失败，请稍后重试');
+    } finally {
+      setActing(null);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <BadgeCheck className="size-4 text-primary" />
+            待审核的认证申请（{items.length}）
+          </CardTitle>
+          <CardDescription>
+            人工核对证件照与学生身份是否相符；审核通过后证件照会立即删除
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {items.length === 0 ? (
+            <p className="text-sm text-muted-foreground text-center py-10">
+              暂无待审核的认证申请
+            </p>
+          ) : (
+            <div className="space-y-3">
+              {items.map((v) => (
+                <div
+                  key={v.id}
+                  className="flex items-center gap-3 border border-border/60 rounded-xl p-4"
+                >
+                  <Image
+                    src={v.avatar}
+                    alt=""
+                    className="size-10 rounded-full object-cover shrink-0"
+                  />
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium text-sm truncate">{v.nickname}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      {v.method === 'student_card' ? '学生证认证' : '校园卡认证'} · {v.createdAt}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={imageLoading}
+                      onClick={() => void handleViewImage(v)}
+                    >
+                      {imageLoading ? (
+                        <Loader2 className="size-3.5 animate-spin" />
+                      ) : (
+                        <Eye className="size-3.5 mr-1" />
+                      )}
+                      查看证件照
+                    </Button>
+                    <Button
+                      size="sm"
+                      disabled={acting === v.id}
+                      onClick={() => void handleReview(v, true)}
+                    >
+                      {acting === v.id ? (
+                        <Loader2 className="size-3.5 animate-spin" />
+                      ) : (
+                        <CheckCircle2 className="size-3.5 mr-1" />
+                      )}
+                      通过
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      disabled={acting === v.id}
+                      onClick={() => void handleReview(v, false)}
+                    >
+                      <Ban className="size-3.5 mr-1" />
+                      拒绝
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* 证件照查看弹窗（签名 URL，5 分钟有效） */}
+      <Dialog open={!!imageUrl} onOpenChange={(o) => !o && setImageUrl(null)}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>证件照</DialogTitle>
+            <DialogDescription>
+              请核对证件与申请人身份是否相符，链接 5 分钟后失效
+            </DialogDescription>
+          </DialogHeader>
+          {imageUrl && (
+            <Image
+              src={imageUrl}
+              alt="证件照"
+              className="w-full max-h-[60vh] object-contain rounded-xl border border-border/60 bg-white"
+            />
+          )}
         </DialogContent>
       </Dialog>
     </div>

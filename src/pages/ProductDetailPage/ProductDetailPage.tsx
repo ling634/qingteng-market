@@ -15,6 +15,7 @@ import {
   CheckCircle2,
   AlertTriangle,
   Loader2,
+  Pencil,
   X,
 } from 'lucide-react';
 import { motion } from 'framer-motion';
@@ -373,9 +374,23 @@ export default function ProductDetailPage() {
                 </Badge>
                 <Badge variant="outline">{product.condition}</Badge>
               </div>
-              <h1 className="text-xl md:text-2xl font-bold text-foreground leading-snug">
-                {product.title}
-              </h1>
+              <div className="flex items-start gap-2">
+                <h1 className="text-xl md:text-2xl font-bold text-foreground leading-snug flex-1">
+                  {product.title}
+                </h1>
+                {/* 编辑闲置：本人在售/已下架商品可修改信息（保存后发布时间刷新） */}
+                {isOwner && (product.status === 'on_sale' || product.status === 'offline') && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="shrink-0 gap-1 h-8"
+                    onClick={() => navigate(`/publish?edit=${product.id}`)}
+                  >
+                    <Pencil className="size-3.5" />
+                    编辑闲置
+                  </Button>
+                )}
+              </div>
               {!!product.wantCount && (
                 <p className="text-xs text-muted-foreground mt-1">
                   {product.wantCount} 人想要

@@ -9,13 +9,14 @@ import {
   Heart,
   ShoppingBag,
   Star,
-  Settings,
   CheckCircle2,
   LogOut,
   Shield,
   Award,
   Droplets,
-  Edit3,
+  Pencil,
+  ClipboardList,
+  BadgeCheck,
   MessageSquareText,
   LayoutDashboard,
   Loader2,
@@ -77,25 +78,35 @@ import {
   submitFeedback,
   appendFeedbackMessage,
   deleteProduct,
+  fetchMyWanted,
+  setWantedStatus,
+  deleteWanted,
+  fetchMyLatestVerification,
+  submitVerification,
   type IFeedback,
   type IPurchase,
   type IReceivedReview,
+  type IVerificationRequest,
+  type VerificationMethod,
 } from '@/lib/api';
-import { uploadMiscImage } from '@/lib/image';
+import { uploadMiscImage, uploadVerificationImage } from '@/lib/image';
 import type { IProduct } from '@/data/products';
+import type { IWanted } from '@/data/wanted';
 
 const loginSchema = z.object({
-  email: z.string().email('请输入正确的邮箱'),
+  nickname: z.string().min(1, '请输入昵称'),
   password: z.string().min(6, '密码至少 6 位'),
 });
-const registerSchema = z.object({
-  email: z.string().email('请输入正确的邮箱'),
-  password: z.string().min(6, '密码至少 6 位'),
-  studentId: z.string().regex(/^\d{11}$/, '学号为 11 位数字'),
-  name: z.string().min(2, '姓名至少 2 个字符').max(20, '姓名不超过 20 个字符'),
-  nickname: z.string().min(2, '昵称至少 2 个字符').max(20, '昵称不超过 20 个字符'),
-  college: z.string().min(2, '学院至少 2 个字符').max(30, '学院不超过 30 个字符'),
-});
+const registerSchema = z
+  .object({
+    nickname: z.string().min(1, '请输入昵称').max(20, '昵称不超过 20 个字符'),
+    password: z.string().min(6, '密码至少 6 位'),
+    confirmPassword: z.string().min(6, '密码至少 6 位'),
+  })
+  .refine((v) => v.password === v.confirmPassword, {
+    message: '两次输入的密码不一致',
+    path: ['confirmPassword'],
+  });
 
 type LoginFormData = z.infer<typeof loginSchema>;
 type RegisterFormData = z.infer<typeof registerSchema>;
@@ -164,14 +175,98 @@ function MyProductCard({
   );
 }
 
+/** 求购状态文案 / 颜色 */
+const WANTED_STATUS_LABEL: Record<IWanted['status'], string> = {
+  open: '求购中',
+  reserved: '已预订',
+  done: '已买到',
+  closed: '已下架',
+};
+
+/** 「我的求购」卡片：已买到/已下架支持长按（手机）或右键（PC）删除；点击卡片打开管理弹窗 */
+function MyWantedCard({
+  item,
+  onManage,
+  onRequestDelete,
+}: {
+  item: IWanted;
+  onManage: (w: IWanted) => void;
+  onRequestDelete: (w: IWanted) => void;
+}) {
+  const deletable = item.status === 'done' || item.status === 'closed';
+  const timerRef = useRef<number | null>(null);
+  const suppressClickRef = useRef(false);
+
+  const startPress = () => {
+    if (!deletable) return;
+    timerRef.current = window.setTimeout(() => {
+      suppressClickRef.current = true;
+      onRequestDelete(item);
+    }, 500);
+  };
+  const cancelPress = () => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  };
+
+  return (
+    <div
+      onClick={() => {
+        if (suppressClickRef.current) {
+          suppressClickRef.current = false;
+          return;
+        }
+        onManage(item);
+      }}
+      onTouchStart={startPress}
+      onTouchEnd={cancelPress}
+      onTouchMove={cancelPress}
+      onContextMenu={(e) => {
+        if (!deletable) return;
+        e.preventDefault();
+        onRequestDelete(item);
+      }}
+      className="bg-card border border-border/60 rounded-xl p-4 cursor-pointer hover:border-primary/30 hover:shadow-sm transition-all"
+    >
+      <div className="flex items-start justify-between gap-3 mb-2">
+        <h3 className="font-semibold text-foreground leading-snug flex-1 line-clamp-1">
+          {item.title}
+        </h3>
+        <Badge
+          variant={item.status === 'open' ? 'default' : 'secondary'}
+          className={cn(
+            'shrink-0',
+            item.status === 'reserved' && 'bg-amber-500/15 text-amber-700 border-0',
+            item.status === 'done' && 'bg-emerald-500/15 text-emerald-700 border-0',
+          )}
+        >
+          {WANTED_STATUS_LABEL[item.status]}
+        </Badge>
+      </div>
+      <div className="flex items-center gap-4 text-sm text-muted-foreground">
+        <span className="text-amber-600 font-medium">{item.budget}</span>
+        <span>{item.category}</span>
+        <span className="ml-auto text-xs">{item.createdAt}</span>
+      </div>
+      {item.description && (
+        <p className="text-sm text-foreground/70 line-clamp-2 mt-2">
+          {item.description}
+        </p>
+      )}
+    </div>
+  );
+}
+
 /** 「我的」页六个功能区 */
 const PROFILE_TABS = [
   { key: 'selling', label: '我的在售', icon: Package },
   { key: 'favorites', label: '我的收藏', icon: Heart },
   { key: 'purchases', label: '我买到的', icon: ShoppingBag },
+  { key: 'wanted', label: '我的求购', icon: ClipboardList },
   { key: 'reputation', label: '信誉评价', icon: Award },
   { key: 'feedback', label: '意见反馈', icon: MessageSquareText },
-  { key: 'settings', label: '个人资料', icon: Settings },
 ];
 
 export default function ProfilePage() {
@@ -216,42 +311,52 @@ export default function ProfilePage() {
   const [poolBusy, setPoolBusy] = useState(false);
   const [myRating, setMyRating] = useState(5.0);
   const [myTags, setMyTags] = useState<string[]>([]);
-  const [nicknameInput, setNicknameInput] = useState('');
-  const [saving, setSaving] = useState(false);
   const [avatarUploading, setAvatarUploading] = useState(false);
   const [cropFile, setCropFile] = useState<File | null>(null);
+  // 昵称编辑（铅笔弹窗）
+  const [nicknameOpen, setNicknameOpen] = useState(false);
+  const [nicknameInput, setNicknameInput] = useState('');
+  const [saving, setSaving] = useState(false);
+  // 我的求购
+  const [myWanted, setMyWanted] = useState<IWanted[]>([]);
+  const [wantedManage, setWantedManage] = useState<IWanted | null>(null);
+  const [wantedDelete, setWantedDelete] = useState<IWanted | null>(null);
+  const [wantedBusy, setWantedBusy] = useState(false);
+  // 认证申请（后置人工审核）
+  const [verification, setVerification] = useState<IVerificationRequest | null>(null);
+  const [verifyOpen, setVerifyOpen] = useState(false);
+  const [verifyMethod, setVerifyMethod] = useState<VerificationMethod>('student_card');
+  const [verifyBusy, setVerifyBusy] = useState(false);
 
   const loginForm = useForm<LoginFormData>({
     resolver: zodResolver(loginSchema),
-    defaultValues: { email: '', password: '' },
+    defaultValues: { nickname: '', password: '' },
   });
 
   const registerForm = useForm<RegisterFormData>({
     resolver: zodResolver(registerSchema),
-    defaultValues: {
-      email: '',
-      password: '',
-      studentId: '',
-      name: '',
-      nickname: '',
-      college: '',
-    },
+    defaultValues: { nickname: '', password: '', confirmPassword: '' },
   });
 
   const loadMyData = useCallback(async () => {
     if (!auth.isLoggedIn) return;
     const uid = auth.userId;
-    const [products, feedbacks, purchaseList, reviewList, profile] = await Promise.all([
-      fetchMyProducts(uid).catch(() => [] as IProduct[]),
-      fetchMyFeedbacks(uid).catch(() => [] as IFeedback[]),
-      fetchMyPurchases(uid).catch(() => [] as IPurchase[]),
-      fetchReceivedReviews(uid).catch(() => [] as IReceivedReview[]),
-      fetchMyProfile(uid).catch(() => null),
-    ]);
+    const [products, feedbacks, purchaseList, reviewList, profile, wantedList, myVerification] =
+      await Promise.all([
+        fetchMyProducts(uid).catch(() => [] as IProduct[]),
+        fetchMyFeedbacks(uid).catch(() => [] as IFeedback[]),
+        fetchMyPurchases(uid).catch(() => [] as IPurchase[]),
+        fetchReceivedReviews(uid).catch(() => [] as IReceivedReview[]),
+        fetchMyProfile(uid).catch(() => null),
+        fetchMyWanted(uid).catch(() => [] as IWanted[]),
+        fetchMyLatestVerification(uid).catch(() => null),
+      ]);
     setMyProducts(products);
     setMyFeedbacks(feedbacks);
     setPurchases(purchaseList);
     setReviews(reviewList);
+    setMyWanted(wantedList);
+    setVerification(myVerification);
     if (profile) {
       setMyRating(profile.rating);
       setMyTags(profile.reputationTags);
@@ -269,6 +374,8 @@ export default function ProfilePage() {
       setMyFeedbacks([]);
       setPurchases([]);
       setReviews([]);
+      setMyWanted([]);
+      setVerification(null);
       setPayQrUrl(null);
       setMyRating(5.0);
       setMyTags([]);
@@ -409,11 +516,8 @@ export default function ProfilePage() {
     };
   }, [auth.isLoggedIn, auth.userId]);
 
-  useEffect(() => {
-    setNicknameInput(auth.nickname);
-  }, [auth.nickname]);
-
-  const handleSaveProfile = async () => {
+  // 昵称编辑弹窗：保存新昵称（全站唯一，登录凭证保持不变）
+  const handleSaveNickname = async () => {
     if (!nicknameInput.trim()) {
       toast.error('昵称不能为空');
       return;
@@ -422,9 +526,69 @@ export default function ProfilePage() {
     const res = await updateNickname(nicknameInput);
     setSaving(false);
     if (res === true) {
-      toast.success('资料已保存');
+      toast.success('昵称已更新');
+      setNicknameOpen(false);
     } else {
       toast.error(res);
+    }
+  };
+
+  // 求购状态流转（与商品管理同一套交互）
+  const handleWantedStatus = async (w: IWanted, status: IWanted['status']) => {
+    if (wantedBusy) return;
+    setWantedBusy(true);
+    try {
+      await setWantedStatus(w.id, status);
+      toast.success(
+        status === 'reserved'
+          ? '已标记为已预订'
+          : status === 'done'
+            ? '已标记为已买到'
+            : status === 'closed'
+              ? '求购已下架'
+              : '求购已重新发布',
+      );
+      setWantedManage(null);
+      void loadMyData();
+    } catch {
+      toast.error('操作失败，请稍后重试');
+    } finally {
+      setWantedBusy(false);
+    }
+  };
+
+  const handleWantedDelete = async () => {
+    if (!wantedDelete || wantedBusy) return;
+    setWantedBusy(true);
+    try {
+      await deleteWanted(wantedDelete.id);
+      toast.success(`已删除求购「${wantedDelete.title}」`);
+      setWantedDelete(null);
+      setWantedManage(null);
+      void loadMyData();
+    } catch {
+      toast.error('删除失败，请稍后重试');
+    } finally {
+      setWantedBusy(false);
+    }
+  };
+
+  // 提交认证申请：上传证件照到私有桶 → 写入申请表（等待管理员人工审核）
+  const handleVerifyFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file || verifyBusy) return;
+    setVerifyBusy(true);
+    try {
+      const path = await uploadVerificationImage(auth.userId, file);
+      await submitVerification(auth.userId, verifyMethod, path);
+      toast.success('认证申请已提交，管理员会尽快人工审核');
+      setVerifyOpen(false);
+      void loadMyData();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '提交失败，请稍后重试');
+    } finally {
+      setVerifyBusy(false);
     }
   };
 
@@ -451,7 +615,7 @@ export default function ProfilePage() {
 
   const handleLogin = async (values: LoginFormData) => {
     setAuthBusy(true);
-    const err = await login(values.email.trim(), values.password);
+    const err = await login(values.nickname.trim(), values.password);
     setAuthBusy(false);
     if (!err) {
       toast.success('登录成功，欢迎回来～');
@@ -465,12 +629,8 @@ export default function ProfilePage() {
   const handleRegister = async (values: RegisterFormData) => {
     setAuthBusy(true);
     const err = await register({
-      email: values.email.trim(),
-      password: values.password,
-      studentId: values.studentId.trim(),
-      name: values.name,
       nickname: values.nickname,
-      college: values.college,
+      password: values.password,
     });
     setAuthBusy(false);
     if (!err) {
@@ -500,8 +660,19 @@ export default function ProfilePage() {
           <div className="absolute -top-10 -right-10 w-40 h-40 bg-primary/10 rounded-full blur-3xl" />
           <div className="absolute -bottom-16 -left-16 w-48 h-48 bg-primary/5 rounded-full blur-3xl" />
 
+          {/* 退出登录：头卡右上角小图标 */}
+          {auth.isLoggedIn && (
+            <button
+              onClick={() => void handleLogout()}
+              title="退出登录"
+              className="absolute top-3 right-3 z-10 size-8 rounded-full bg-card/80 border border-border/60 text-muted-foreground hover:text-destructive hover:border-destructive/40 flex items-center justify-center transition-colors"
+            >
+              <LogOut className="size-4" />
+            </button>
+          )}
+
           <div className="relative flex items-start gap-4">
-            <div className="relative shrink-0">
+            <div className="relative shrink-0 flex flex-col items-center gap-2">
               {auth.isLoggedIn ? (
                 <label className="relative block cursor-pointer" title="点击更换头像">
                   <Image
@@ -537,6 +708,23 @@ export default function ProfilePage() {
                   <Shield className="size-3.5" />
                 </div>
               )}
+              {/* 认证后置：未认证用户可申请成为认证园丁（人工审核） */}
+              {auth.isLoggedIn && !auth.verified && !auth.isAdmin && (
+                verification?.status === 'pending' ? (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-xs font-medium text-amber-700">
+                    <Loader2 className="size-3" />
+                    认证审核中
+                  </span>
+                ) : (
+                  <button
+                    onClick={() => setVerifyOpen(true)}
+                    className="inline-flex items-center gap-1 rounded-full border border-primary/40 bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary hover:bg-primary/20 transition-colors"
+                  >
+                    <BadgeCheck className="size-3.5" />
+                    {verification?.status === 'rejected' ? '重新申请认证' : '申请成为认证园丁'}
+                  </button>
+                )
+              )}
             </div>
             <div className="flex-1 min-w-0">
               {auth.isLoggedIn ? (
@@ -545,13 +733,24 @@ export default function ProfilePage() {
                     <h2 className="text-xl md:text-2xl font-bold text-foreground">
                       {auth.nickname}
                     </h2>
+                    {/* 昵称编辑入口（铅笔） */}
+                    <button
+                      onClick={() => {
+                        setNicknameInput(auth.nickname);
+                        setNicknameOpen(true);
+                      }}
+                      title="编辑昵称"
+                      className="size-6 rounded-full text-muted-foreground hover:text-primary hover:bg-primary/10 flex items-center justify-center transition-colors"
+                    >
+                      <Pencil className="size-3.5" />
+                    </button>
                     {auth.isAdmin ? (
                       <Badge className="bg-amber-500 hover:bg-amber-600 text-white border-0 text-xs">
                         管理员
                       </Badge>
                     ) : auth.verified ? (
                       <Badge className="bg-primary/15 text-primary border-0 text-xs">
-                        已认证学生
+                        已认证
                       </Badge>
                     ) : (
                       <Badge variant="secondary" className="text-xs">
@@ -572,9 +771,6 @@ export default function ProfilePage() {
                       汇水池
                     </button>
                   </div>
-                  <p className="text-sm text-muted-foreground mt-1">
-                    学号 {auth.studentId}
-                  </p>
                   <div className="flex items-center gap-4 mt-3 flex-wrap">
                     <div className="text-center">
                       <div className="text-lg font-bold text-foreground">
@@ -984,59 +1180,37 @@ export default function ProfilePage() {
             )}
           </TabsContent>
 
-          {/* 个人资料 */}
-          <TabsContent value="settings" className="mt-0">
+          {/* 我的求购（与「我的在售」同一套管理交互：点击管理，长按删除已完结） */}
+          <TabsContent value="wanted" className="mt-0">
             {auth.isLoggedIn ? (
-              <div className="bg-card border border-border/60 rounded-xl p-5 space-y-4">
-                <div className="flex items-center gap-4">
-                  <label className="relative cursor-pointer shrink-0" title="点击更换头像">
-                    <Image
-                      src={auth.avatar}
-                      alt=""
-                      className="size-16 rounded-full object-cover"
-                    />
-                    {avatarUploading && (
-                      <span className="absolute inset-0 rounded-full bg-black/40 text-white flex items-center justify-center">
-                        <Loader2 className="size-4 animate-spin" />
-                      </span>
-                    )}
-                    <input type="file" accept="image/*" className="hidden" onChange={handleAvatarFile} disabled={avatarUploading} />
-                  </label>
-                  <div>
-                    <p className="font-semibold">{auth.nickname}</p>
-                    <p className="text-xs text-muted-foreground">
-                      学号 {auth.studentId}
-                      {auth.verified && (
-                        <span className="text-primary ml-1">✓ 已认证</span>
-                      )}
-                    </p>
-                  </div>
-                </div>
-                <div>
-                  <label className="text-sm font-medium mb-1.5 block">昵称</label>
-                  <Input
-                    value={nicknameInput}
-                    onChange={(e) => setNicknameInput(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <label className="text-sm font-medium mb-1.5 block">学号</label>
-                  <Input value={auth.studentId} disabled />
-                  <p className="text-xs text-muted-foreground mt-1.5">
-                    学号为注册身份标识，不可修改
+              myWanted.length > 0 ? (
+                <>
+                  <p className="text-xs text-muted-foreground mb-2">
+                    点击卡片可管理求购；长按已买到 / 已下架的卡片可将其删除
                   </p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {myWanted.map((w) => (
+                      <MyWantedCard
+                        key={w.id}
+                        item={w}
+                        onManage={setWantedManage}
+                        onRequestDelete={setWantedDelete}
+                      />
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div className="flex flex-col items-center justify-center py-16 text-center">
+                  <div className="size-14 rounded-full bg-muted flex items-center justify-center mb-3">
+                    <ClipboardList className="size-7 text-muted-foreground" />
+                  </div>
+                  <h3 className="text-base font-medium mb-1">还没有发布过求购</h3>
+                  <p className="text-sm text-muted-foreground mb-4">
+                    找不到想要的东西？发布求购让卖家来找你
+                  </p>
+                  <Button onClick={() => navigate('/wanted')}>去发布求购</Button>
                 </div>
-                <div className="flex gap-3 pt-2">
-                  <Button variant="secondary" className="flex-1" onClick={handleLogout}>
-                    <LogOut className="size-4 mr-1.5" />
-                    退出登录
-                  </Button>
-                  <Button className="flex-1" onClick={handleSaveProfile} disabled={saving}>
-                    <Edit3 className="size-4 mr-1.5" />
-                    {saving ? '保存中...' : '保存修改'}
-                  </Button>
-                </div>
-              </div>
+              )
             ) : (
               <EmptyLoginTip onLogin={() => { setAuthMode('login'); setAuthOpen(true); }} />
             )}
@@ -1200,6 +1374,176 @@ export default function ProfilePage() {
         </DialogContent>
       </Dialog>
 
+      {/* 昵称编辑弹窗（铅笔入口，全站唯一） */}
+      <Dialog open={nicknameOpen} onOpenChange={setNicknameOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>编辑昵称</DialogTitle>
+            <DialogDescription>
+              昵称全站唯一，修改后用新昵称登录
+            </DialogDescription>
+          </DialogHeader>
+          <Input
+            value={nicknameInput}
+            onChange={(e) => setNicknameInput(e.target.value)}
+            placeholder="请输入新昵称"
+            maxLength={20}
+          />
+          <DialogFooter>
+            <Button variant="secondary" onClick={() => setNicknameOpen(false)}>
+              取消
+            </Button>
+            <Button onClick={() => void handleSaveNickname()} disabled={saving}>
+              {saving ? '保存中...' : '保存'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 认证申请弹窗：学生证封面 / 校园卡 两种方式，管理员人工审核 */}
+      <Dialog open={verifyOpen} onOpenChange={setVerifyOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-1.5">
+              <BadgeCheck className="size-4 text-primary" />
+              申请成为认证园丁
+            </DialogTitle>
+            <DialogDescription>
+              提交后由管理员人工审核，通过后你将获得「已认证」标识
+            </DialogDescription>
+          </DialogHeader>
+          {verification?.status === 'rejected' && (
+            <p className="text-xs text-destructive bg-destructive/10 border border-destructive/20 rounded-lg px-3 py-2">
+              上一次申请未通过，请确认照片清晰、信息完整后重新提交
+            </p>
+          )}
+          <Tabs
+            value={verifyMethod}
+            onValueChange={(v) => setVerifyMethod(v as VerificationMethod)}
+          >
+            <TabsList className="grid grid-cols-2 w-full mb-4">
+              <TabsTrigger value="student_card">学生证认证</TabsTrigger>
+              <TabsTrigger value="campus_card">校园卡认证</TabsTrigger>
+            </TabsList>
+            <TabsContent value="student_card" className="space-y-3 mt-0">
+              <p className="text-sm text-foreground/80">
+                上传学生证封面（请遮挡或裁掉学号与身份证号）
+              </p>
+              <VerifyUploadBox busy={verifyBusy} onFile={handleVerifyFile} />
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                （温馨提示：平台不会记录你的学号，所有信息仅用于身份核验，保护你的隐私安全。）
+              </p>
+            </TabsContent>
+            <TabsContent value="campus_card" className="space-y-3 mt-0">
+              <p className="text-sm text-foreground/80">
+                上传佛大校园卡的照片（请遮挡或裁掉学号与身份证号）
+              </p>
+              <VerifyUploadBox busy={verifyBusy} onFile={handleVerifyFile} />
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                （温馨提示：平台不会记录你的学号，所有信息仅用于身份核验，保护你的隐私安全。）
+              </p>
+            </TabsContent>
+          </Tabs>
+        </DialogContent>
+      </Dialog>
+
+      {/* 求购管理弹窗（状态流转，与商品管理一致） */}
+      <Dialog
+        open={!!wantedManage}
+        onOpenChange={(o) => !o && setWantedManage(null)}
+      >
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="line-clamp-1">{wantedManage?.title}</DialogTitle>
+            <DialogDescription>
+              当前状态：{wantedManage ? WANTED_STATUS_LABEL[wantedManage.status] : ''}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-2">
+            {wantedManage?.status === 'open' && (
+              <>
+                <Button
+                  disabled={wantedBusy}
+                  onClick={() => void handleWantedStatus(wantedManage, 'reserved')}
+                >
+                  标记已预订
+                </Button>
+                <Button
+                  variant="secondary"
+                  disabled={wantedBusy}
+                  onClick={() => void handleWantedStatus(wantedManage, 'closed')}
+                >
+                  下架求购
+                </Button>
+              </>
+            )}
+            {wantedManage?.status === 'reserved' && (
+              <>
+                <Button
+                  disabled={wantedBusy}
+                  onClick={() => void handleWantedStatus(wantedManage, 'done')}
+                >
+                  标记已买到
+                </Button>
+                <Button
+                  variant="secondary"
+                  disabled={wantedBusy}
+                  onClick={() => void handleWantedStatus(wantedManage, 'open')}
+                >
+                  取消预订
+                </Button>
+              </>
+            )}
+            {(wantedManage?.status === 'done' || wantedManage?.status === 'closed') && (
+              <>
+                <Button
+                  disabled={wantedBusy}
+                  onClick={() => void handleWantedStatus(wantedManage, 'open')}
+                >
+                  重新发布
+                </Button>
+                <Button
+                  variant="destructive"
+                  disabled={wantedBusy}
+                  onClick={() => {
+                    setWantedDelete(wantedManage);
+                  }}
+                >
+                  删除求购
+                </Button>
+              </>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* 删除求购确认（不可恢复） */}
+      <AlertDialog
+        open={!!wantedDelete}
+        onOpenChange={(o) => !o && setWantedDelete(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>删除该求购？</AlertDialogTitle>
+            <AlertDialogDescription>
+              「{wantedDelete?.title}」将被永久删除，不可恢复。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={wantedBusy}>取消</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={wantedBusy}
+              onClick={(e) => {
+                e.preventDefault();
+                void handleWantedDelete();
+              }}
+            >
+              {wantedBusy ? '删除中...' : '确认删除'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <Dialog open={authOpen} onOpenChange={setAuthOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -1220,27 +1564,14 @@ export default function ProfilePage() {
             <TabsContent value="login">
               <Form {...loginForm}>
                 <form onSubmit={loginForm.handleSubmit(handleLogin)} className="space-y-4">
-                  <div className="bg-primary/5 border border-primary/20 rounded-xl p-4 flex items-start gap-3">
-                    <Shield className="size-5 text-primary shrink-0 mt-0.5" />
-                    <div className="text-sm">
-                      <p className="font-medium text-primary">邮箱登录</p>
-                      <p className="text-foreground/70 text-xs mt-0.5 leading-relaxed">
-                        使用注册时填写的邮箱和密码登录，数据云端同步。
-                      </p>
-                    </div>
-                  </div>
                   <FormField
                     control={loginForm.control}
-                    name="email"
+                    name="nickname"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>邮箱</FormLabel>
+                        <FormLabel>昵称</FormLabel>
                         <FormControl>
-                          <Input
-                            type="email"
-                            placeholder="请输入注册邮箱"
-                            {...field}
-                          />
+                          <Input placeholder="请输入昵称" {...field} />
                         </FormControl>
                         <FormMessage />
                       </FormItem>
@@ -1284,12 +1615,12 @@ export default function ProfilePage() {
                 <form onSubmit={registerForm.handleSubmit(handleRegister)} className="space-y-4">
                   <FormField
                     control={registerForm.control}
-                    name="email"
+                    name="nickname"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>邮箱</FormLabel>
+                        <FormLabel>昵称</FormLabel>
                         <FormControl>
-                          <Input type="email" placeholder="用于登录的邮箱" {...field} />
+                          <Input placeholder="平台显示的昵称（全站唯一）" {...field} />
                         </FormControl>
                         <FormMessage />
                       </FormItem>
@@ -1300,7 +1631,7 @@ export default function ProfilePage() {
                     name="password"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>密码</FormLabel>
+                        <FormLabel>设置密码</FormLabel>
                         <FormControl>
                           <Input type="password" placeholder="至少 6 位" {...field} />
                         </FormControl>
@@ -1310,56 +1641,20 @@ export default function ProfilePage() {
                   />
                   <FormField
                     control={registerForm.control}
-                    name="studentId"
+                    name="confirmPassword"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>学号</FormLabel>
+                        <FormLabel>确认密码</FormLabel>
                         <FormControl>
-                          <Input placeholder="11 位学号" {...field} />
+                          <Input type="password" placeholder="再输入一次密码" {...field} />
                         </FormControl>
                         <FormMessage />
                       </FormItem>
                     )}
                   />
-                  <FormField
-                    control={registerForm.control}
-                    name="name"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>姓名</FormLabel>
-                        <FormControl>
-                          <Input placeholder="请输入真实姓名" {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={registerForm.control}
-                    name="nickname"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>昵称</FormLabel>
-                        <FormControl>
-                          <Input placeholder="平台显示的昵称" {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={registerForm.control}
-                    name="college"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>学院</FormLabel>
-                        <FormControl>
-                          <Input placeholder="如：计算机学院" {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
+                  <p className="text-xs text-muted-foreground leading-relaxed bg-primary/5 border border-primary/15 rounded-lg px-3 py-2">
+                    青藤集市基于佛大校友信任建立，请勿恶意注册。
+                  </p>
                   <p className="text-xs text-muted-foreground">
                     已有账号？
                     <button
@@ -1380,6 +1675,37 @@ export default function ProfilePage() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+/** 认证申请的上传框（点击选择图片，整个虚线框可点） */
+function VerifyUploadBox({
+  busy,
+  onFile,
+}: {
+  busy: boolean;
+  onFile: (e: React.ChangeEvent<HTMLInputElement>) => void;
+}) {
+  return (
+    <label className="block cursor-pointer">
+      <div className="border-2 border-dashed border-primary/40 rounded-xl py-8 flex flex-col items-center gap-2 text-primary hover:bg-primary/5 transition-colors">
+        {busy ? (
+          <Loader2 className="size-6 animate-spin" />
+        ) : (
+          <BadgeCheck className="size-6" />
+        )}
+        <span className="text-sm font-medium">
+          {busy ? '上传中...' : '[ 点击上传图片 ]'}
+        </span>
+      </div>
+      <input
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => void onFile(e)}
+        disabled={busy}
+      />
+    </label>
   );
 }
 

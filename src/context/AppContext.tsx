@@ -11,13 +11,15 @@ import { supabase } from '@/lib/supabase';
 import {
   DEFAULT_AVATAR,
   addFavorite,
-  checkRegistration,
+  checkNickname,
   fetchAds,
   fetchFavoriteIds,
   fetchMyProfile,
   fetchUnreadAdminCount,
   fetchUnreadMessageCount,
+  getLoginEmail,
   isRecentSelfTradeAction,
+  nicknameToEmail,
   removeFavorite,
   updateAvatarUrl,
   updateNickname as apiUpdateNickname,
@@ -51,12 +53,8 @@ const DEFAULT_AUTH: AuthState = {
 };
 
 export interface RegisterInfo {
-  email: string;
-  password: string;
-  studentId: string;
   nickname: string;
-  college: string;
-  name: string;
+  password: string;
 }
 
 interface AppContextValue {
@@ -72,11 +70,11 @@ interface AppContextValue {
   favorites: string[];
   isFavorite: (id: string) => boolean;
   toggleFavorite: (id: string) => Promise<void>;
-  /** 邮箱 + 密码登录，返回 null 表示成功，否则为失败原因 */
-  login: (email: string, password: string) => Promise<string | null>;
+  /** 昵称 + 密码登录，返回 null 表示成功，否则为失败原因 */
+  login: (nickname: string, password: string) => Promise<string | null>;
   /** 管理员登录（邮箱 + 密码，校验 is_admin），返回 null 表示成功 */
   adminLogin: (email: string, password: string) => Promise<string | null>;
-  /** 注册，返回 null 表示成功，否则为失败原因 */
+  /** 注册（昵称 + 密码），返回 null 表示成功，否则为失败原因 */
   register: (info: RegisterInfo) => Promise<string | null>;
   logout: () => Promise<void>;
   /** 修改昵称（全站唯一），返回 true 或失败原因 */
@@ -207,6 +205,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       .channel(`admin-unread-${auth.userId}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'feedbacks' }, debouncedRefresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'reports' }, debouncedRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'verification_requests' }, debouncedRefresh)
       .subscribe();
     return () => {
       if (timer) clearTimeout(timer);
@@ -249,12 +248,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // ---------- 认证 ----------
 
   const login = useCallback(
-    async (email: string, password: string): Promise<string | null> => {
+    async (nickname: string, password: string): Promise<string | null> => {
+      const email = await getLoginEmail(nickname);
+      if (!email) return '昵称或密码不正确';
       const { error } = await supabase.auth.signInWithPassword({
         email,
         password,
       });
-      if (error) return '邮箱或密码不正确';
+      if (error) return '昵称或密码不正确';
       return null; // onAuthStateChange 会自动加载资料
     },
     [],
@@ -280,25 +281,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const register = useCallback(
     async (info: RegisterInfo): Promise<string | null> => {
       const nickname = info.nickname.trim();
-      // 注册前可用性检查（RPC）
-      const { nicknameTaken, studentIdTaken } = await checkRegistration(
-        nickname,
-        info.studentId,
-      );
-      if (nicknameTaken) return '该昵称已被使用，请换一个';
-      if (studentIdTaken) return '该学号已注册，请直接登录';
+      if (!nickname) return '昵称不能为空';
 
+      // 注册前昵称占用检查（RPC）
+      if (await checkNickname(nickname)) return '该昵称已被使用，请换一个';
+
+      // Supabase Auth 要求邮箱：用昵称合成假邮箱（用户无感知）
+      const email = nicknameToEmail(nickname);
       const { data, error } = await supabase.auth.signUp({
-        email: info.email,
+        email,
         password: info.password,
       });
       if (error) {
         console.error('[register] signUp error:', error);
         if (error.message.toLowerCase().includes('already')) {
-          return '该邮箱已注册，请直接登录';
-        }
-        if (error.message.toLowerCase().includes('rate limit')) {
-          return '发送验证邮件过于频繁，请在 Supabase 关闭邮箱验证后重试';
+          return '该昵称已被使用，请换一个';
         }
         return `注册失败：${error.message}`;
       }
@@ -311,11 +308,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return '项目开启了邮箱验证，请先在 Supabase 关闭 Confirm email（Authentication → Sign In / Providers → Email）';
       }
 
-      // 写入公开资料 + 隐私资料（邮箱验证已关闭，signUp 后即处于登录态）
+      // 写入公开资料 + 隐私资料（学号/姓名不再收集，认证后置人工审核）
       const { error: pErr } = await supabase.from('profiles').insert({
         id: uid,
         nickname,
-        college: info.college.trim(),
         avatar_url: DEFAULT_AVATAR,
       });
       if (pErr) {
@@ -325,13 +321,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       const { error: vErr } = await supabase.from('profile_private').insert({
         user_id: uid,
-        student_id: info.studentId,
-        name: info.name.trim(),
-        email: info.email,
+        email,
       });
       if (vErr) {
         console.error('[register] profile_private insert error:', vErr);
-        if (vErr.code === '23505') return '该学号已注册，请直接登录';
         return '资料写入失败，请稍后重试';
       }
       return null;

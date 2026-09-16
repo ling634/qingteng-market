@@ -364,7 +364,11 @@ export default function WantedPage() {
                       ) : (
                         <>
                           <XCircle className="size-3 mr-1" />
-                          已完成
+                          {w.status === 'reserved'
+                            ? '已预订'
+                            : w.status === 'done'
+                              ? '已买到'
+                              : '已下架'}
                         </>
                       )}
                     </Badge>
@@ -392,7 +396,7 @@ export default function WantedPage() {
                       variant="secondary"
                       className="gap-1 text-xs"
                       onClick={() => handleContact(w)}
-                      disabled={w.status === 'closed' || contacting === w.id}
+                      disabled={w.status !== 'open' || contacting === w.id}
                     >
                       {contacting === w.id ? (
                         <Loader2 className="size-3.5 animate-spin" />
