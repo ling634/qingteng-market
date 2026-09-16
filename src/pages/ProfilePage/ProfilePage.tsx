@@ -15,6 +15,7 @@ import {
   Shield,
   Award,
   Clock,
+  Camera,
   Edit3,
   MessageSquareText,
   LayoutDashboard,
@@ -23,6 +24,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { motion } from 'framer-motion';
+import AvatarCropDialog from '@/components/AvatarCropDialog';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Input } from '@/components/ui/input';
@@ -165,6 +167,7 @@ export default function ProfilePage() {
     favorites,
     updateNickname,
     updateAvatar,
+    unreadAdmin,
   } = useApp();
   const [authOpen, setAuthOpen] = useState(false);
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
@@ -189,6 +192,7 @@ export default function ProfilePage() {
   const [nicknameInput, setNicknameInput] = useState('');
   const [saving, setSaving] = useState(false);
   const [avatarUploading, setAvatarUploading] = useState(false);
+  const [cropFile, setCropFile] = useState<File | null>(null);
 
   const loginForm = useForm<LoginFormData>({
     resolver: zodResolver(loginSchema),
@@ -310,16 +314,22 @@ export default function ProfilePage() {
     }
   };
 
-  // 从相册选择头像 → 压缩上传
-  const handleAvatarFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  // 从相册选择头像 → 打开裁剪弹窗
+  const handleAvatarFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
+    setCropFile(file);
+  };
+
+  // 裁剪确认 → 上传
+  const handleCropConfirm = async (file: File) => {
     setAvatarUploading(true);
     const ok = await updateAvatar(file);
     setAvatarUploading(false);
     if (ok) {
       toast.success('头像已更新');
+      setCropFile(null);
     } else {
       toast.error('头像上传失败，请稍后重试');
     }
@@ -379,11 +389,27 @@ export default function ProfilePage() {
           <div className="relative flex items-start gap-4">
             <div className="relative shrink-0">
               {auth.isLoggedIn ? (
-                <Image
-                  src={auth.avatar}
-                  alt=""
-                  className="size-16 md:size-20 rounded-full object-cover border-4 border-white shadow-md"
-                />
+                <label className="relative block cursor-pointer group" title="点击更换头像">
+                  <Image
+                    src={auth.avatar}
+                    alt=""
+                    className="size-16 md:size-20 rounded-full object-cover border-4 border-white shadow-md"
+                  />
+                  <span className="absolute inset-0 rounded-full bg-black/40 text-white flex items-center justify-center opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
+                    {avatarUploading ? (
+                      <Loader2 className="size-5 animate-spin" />
+                    ) : (
+                      <Camera className="size-5" />
+                    )}
+                  </span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={handleAvatarFile}
+                    disabled={avatarUploading}
+                  />
+                </label>
               ) : (
                 <div className="size-16 md:size-20 rounded-full bg-muted flex items-center justify-center border-4 border-white shadow-md">
                   <User className="size-8 text-muted-foreground" />
@@ -457,11 +483,16 @@ export default function ProfilePage() {
                     <Button
                       variant="outline"
                       size="sm"
-                      className="mt-3 gap-1.5"
+                      className="mt-3 gap-1.5 relative"
                       onClick={() => navigate('/admin')}
                     >
                       <LayoutDashboard className="size-3.5" />
                       进入管理后台
+                      {unreadAdmin > 0 && (
+                        <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-destructive text-white text-[10px] font-medium flex items-center justify-center leading-none">
+                          {unreadAdmin > 99 ? '99+' : unreadAdmin}
+                        </span>
+                      )}
                     </Button>
                   )}
                 </>
@@ -815,7 +846,7 @@ export default function ProfilePage() {
                         <span className="text-primary ml-1">✓ 已认证</span>
                       )}
                     </p>
-                    <p className="text-xs text-muted-foreground mt-0.5">点击头像可从相册更换</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">点击头像可更换并自由裁剪</p>
                   </div>
                 </div>
                 <div>
@@ -849,6 +880,14 @@ export default function ProfilePage() {
           </TabsContent>
         </Tabs>
       </div>
+
+      {/* 头像裁剪弹窗 */}
+      <AvatarCropDialog
+        file={cropFile}
+        onClose={() => setCropFile(null)}
+        onConfirm={(f) => void handleCropConfirm(f)}
+        busy={avatarUploading}
+      />
 
       {/* 登录/注册弹窗 */}
       {/* 删除商品确认弹窗 */}

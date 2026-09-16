@@ -15,6 +15,7 @@ import {
   fetchAds,
   fetchFavoriteIds,
   fetchMyProfile,
+  fetchUnreadAdminCount,
   fetchUnreadMessageCount,
   removeFavorite,
   updateAvatarUrl,
@@ -65,6 +66,8 @@ interface AppContextValue {
   refreshAds: () => Promise<void>;
   /** 未读私信总条数（全局红点） */
   unreadMessages: number;
+  /** 管理员待处理条数（未读意见反馈 + 未读举报，仅管理员账号有值） */
+  unreadAdmin: number;
   favorites: string[];
   isFavorite: (id: string) => boolean;
   toggleFavorite: (id: string) => Promise<void>;
@@ -89,6 +92,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [ads, setAds] = useState<IAd[]>([]);
   const [favorites, setFavorites] = useState<string[]>([]);
   const [unreadMessages, setUnreadMessages] = useState(0);
+  const [unreadAdmin, setUnreadAdmin] = useState(0);
 
   const loadProfile = useCallback(async (userId: string) => {
     try {
@@ -180,6 +184,34 @@ export function AppProvider({ children }: { children: ReactNode }) {
       void supabase.removeChannel(channel);
     };
   }, [auth.isLoggedIn, auth.userId]);
+
+  // 管理员待处理红点：未读意见反馈 + 未读举报（Realtime 监听两表增改，防抖 600ms）
+  useEffect(() => {
+    if (!auth.isAdmin) {
+      setUnreadAdmin(0);
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const refresh = () => {
+      fetchUnreadAdminCount()
+        .then(setUnreadAdmin)
+        .catch(() => {});
+    };
+    const debouncedRefresh = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(refresh, 600);
+    };
+    refresh();
+    const channel = supabase
+      .channel(`admin-unread-${auth.userId}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'feedbacks' }, debouncedRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'reports' }, debouncedRefresh)
+      .subscribe();
+    return () => {
+      if (timer) clearTimeout(timer);
+      void supabase.removeChannel(channel);
+    };
+  }, [auth.isAdmin, auth.userId]);
 
   // ---------- 认证 ----------
 
@@ -348,6 +380,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       ads,
       refreshAds,
       unreadMessages,
+      unreadAdmin,
       favorites,
       isFavorite,
       toggleFavorite,
@@ -364,6 +397,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       ads,
       refreshAds,
       unreadMessages,
+      unreadAdmin,
       favorites,
       isFavorite,
       toggleFavorite,

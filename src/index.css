@@ -12,3 +12,19 @@ body,
   overflow-x: clip;
   overscroll-behavior: none;
 }
+
+/* 移动端布局占位变量：底部导航高度 / 顶栏高度（消息页键盘弹出时被置 0） */
+:root {
+  --navh: 52px;
+  --headerh: 4rem;
+}
+
+/* 软键盘弹出（由 MessagesPage 检测后给根节点加 .kb-open）：
+   聊天区占满整个可视窗口，隐藏底部导航并把空间让给输入框 */
+:root.kb-open {
+  --navh: 0px;
+  --headerh: 0px;
+}
+:root.kb-open .mobile-bottom-nav {
+  display: none;
+}

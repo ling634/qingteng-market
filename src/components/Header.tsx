@@ -23,14 +23,24 @@ export const NAV_ITEMS = [
 
 export default function Header() {
   const navigate = useNavigate();
-  const { auth, unreadMessages } = useApp();
+  const { auth, unreadMessages, unreadAdmin } = useApp();
 
-  const unreadBadge = (path: string) =>
-    path === '/messages' && unreadMessages > 0 ? (
-      <span className="absolute -top-1.5 -right-2.5 min-w-[16px] h-4 px-1 rounded-full bg-destructive text-white text-[10px] font-medium flex items-center justify-center leading-none">
-        {unreadMessages > 99 ? '99+' : unreadMessages}
-      </span>
-    ) : null;
+  const unreadBadge = (path: string) => {
+    if (path === '/messages' && unreadMessages > 0) {
+      return (
+        <span className="absolute -top-1.5 -right-2.5 min-w-[16px] h-4 px-1 rounded-full bg-destructive text-white text-[10px] font-medium flex items-center justify-center leading-none">
+          {unreadMessages > 99 ? '99+' : unreadMessages}
+        </span>
+      );
+    }
+    // 管理员：有待处理反馈/举报时「我的」显示小红点
+    if (path === '/profile' && unreadAdmin > 0) {
+      return (
+        <span className="absolute -top-1 -right-1 size-2 rounded-full bg-destructive" />
+      );
+    }
+    return null;
+  };
 
   return (
     <header className="sticky top-0 z-50 w-full bg-background/80 backdrop-blur-md border-b border-border/40">

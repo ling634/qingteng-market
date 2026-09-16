@@ -987,6 +987,23 @@ export async function markAllMessagesRead(userId: string): Promise<void> {
   if (error) throw error;
 }
 
+/** 管理员待处理条数：未读意见反馈 + 未读举报（RLS 限定仅管理员可查，非管理员调用会报错，由调用方限定） */
+export async function fetchUnreadAdminCount(): Promise<number> {
+  const [fb, rp] = await Promise.all([
+    supabase
+      .from('feedbacks')
+      .select('id', { count: 'exact', head: true })
+      .is('read_at', null),
+    supabase
+      .from('reports')
+      .select('id', { count: 'exact', head: true })
+      .is('read_at', null),
+  ]);
+  if (fb.error) throw fb.error;
+  if (rp.error) throw rp.error;
+  return (fb.count ?? 0) + (rp.count ?? 0);
+}
+
 // ---------------------------------------------------------------
 // 交易记录（本期只读，通常为空）
 // ---------------------------------------------------------------

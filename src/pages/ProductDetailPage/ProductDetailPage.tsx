@@ -15,6 +15,7 @@ import {
   CheckCircle2,
   AlertTriangle,
   Loader2,
+  X,
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
@@ -59,6 +60,7 @@ export default function ProductDetailPage() {
   const [relatedProducts, setRelatedProducts] = useState<IProduct[]>([]);
   const [loading, setLoading] = useState(true);
   const [imgIdx, setImgIdx] = useState(0);
+  const [viewerOpen, setViewerOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const [reportReason, setReportReason] = useState('');
   const [reportDetail, setReportDetail] = useState('');
@@ -221,7 +223,8 @@ export default function ProductDetailPage() {
               <Image
                 src={product.images[imgIdx]}
                 alt={product.title}
-                className="w-full h-full object-cover"
+                className="w-full h-full object-cover cursor-zoom-in"
+                onClick={() => setViewerOpen(true)}
               />
               {product.is_top && (
                 <div className="absolute top-3 left-3 flex items-center gap-1 bg-gradient-to-r from-amber-500 to-amber-400 text-white text-xs font-semibold px-3 py-1.5 rounded-full shadow-md">
@@ -525,6 +528,55 @@ export default function ProductDetailPage() {
           </>
         )}
       </div>
+
+      {/* 全屏大图查看器：点商品图打开，完整比例显示，可左右切换 */}
+      {viewerOpen && (
+        <div
+          className="fixed inset-0 z-[70] bg-black/90 flex items-center justify-center"
+          onClick={() => setViewerOpen(false)}
+        >
+          <img
+            src={product.images[imgIdx]}
+            alt={product.title}
+            className="max-w-full max-h-full object-contain select-none"
+            onClick={(e) => e.stopPropagation()}
+          />
+          <button
+            className="absolute top-4 right-4 size-10 rounded-full bg-white/15 text-white flex items-center justify-center hover:bg-white/30 transition-colors"
+            onClick={() => setViewerOpen(false)}
+            aria-label="关闭"
+          >
+            <X className="size-5" />
+          </button>
+          {product.images.length > 1 && (
+            <>
+              <button
+                className="absolute left-3 top-1/2 -translate-y-1/2 size-10 rounded-full bg-white/15 text-white flex items-center justify-center hover:bg-white/30 transition-colors"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setImgIdx((i) => (i - 1 + product.images.length) % product.images.length);
+                }}
+                aria-label="上一张"
+              >
+                <ChevronLeft className="size-6" />
+              </button>
+              <button
+                className="absolute right-3 top-1/2 -translate-y-1/2 size-10 rounded-full bg-white/15 text-white flex items-center justify-center hover:bg-white/30 transition-colors"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setImgIdx((i) => (i + 1) % product.images.length);
+                }}
+                aria-label="下一张"
+              >
+                <ChevronRight className="size-6" />
+              </button>
+              <div className="absolute bottom-5 left-1/2 -translate-x-1/2 bg-black/50 text-white text-xs px-3 py-1 rounded-full">
+                {imgIdx + 1}/{product.images.length}
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       {/* 举报弹窗 */}
       <Dialog open={reportOpen} onOpenChange={setReportOpen}>

@@ -11,9 +11,9 @@ const HIDE_BOTTOM_PATTERNS = [/^\/products\/[^/]+/, /^\/publish/, /^\/admin/];
 /** 私信页（手机端）不展示 Footer，避免聊天区下方出现大段无关内容 */
 const HIDE_FOOTER_MOBILE_PATTERNS = [/^\/messages/];
 
-/** 移动端底部导航（含消息未读红点） */
+/** 移动端底部导航（含消息未读红点、管理员待处理红点） */
 function MobileNav() {
-  const { unreadMessages } = useApp();
+  const { unreadMessages, unreadAdmin } = useApp();
   return (
     <nav className="flex items-stretch">
       {NAV_ITEMS.map((item) => {
@@ -36,6 +36,9 @@ function MobileNav() {
                 <span className="absolute -top-1 -right-2 min-w-[15px] h-[15px] px-1 rounded-full bg-destructive text-white text-[9px] font-medium flex items-center justify-center leading-none">
                   {unreadMessages > 99 ? '99+' : unreadMessages}
                 </span>
+              )}
+              {item.path === '/profile' && unreadAdmin > 0 && (
+                <span className="absolute -top-0.5 -right-1 size-2 rounded-full bg-destructive" />
               )}
             </span>
             {item.label}
@@ -69,9 +72,9 @@ function LayoutInner() {
         </div>
       </div>
 
-      {/* 移动端底部主导航（常驻） */}
+      {/* 移动端底部主导航（常驻；软键盘弹出时通过 .kb-open 隐藏） */}
       {showBottom && (
-        <div className="md:hidden fixed bottom-0 inset-x-0 z-50 bg-background/95 backdrop-blur-md border-t border-border/60">
+        <div className="mobile-bottom-nav md:hidden fixed bottom-0 inset-x-0 z-50 bg-background/95 backdrop-blur-md border-t border-border/60">
           <MobileNav />
         </div>
       )}
