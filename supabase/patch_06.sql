@@ -43,10 +43,19 @@ set email = 'u_' || encode(convert_to(p.nickname, 'UTF8'), 'hex') || '@qingteng.
 from public.profiles p
 where p.id = u.id and u.email not like '%@qingteng.local';
 
+-- 注意：auth.identities.email 是生成列（由 identity_data 算出），不能直接 UPDATE，
+-- 需同步更新 provider_id 与 identity_data，生成列会自动跟着变
 update auth.identities i
-set email = 'u_' || encode(convert_to(p.nickname, 'UTF8'), 'hex') || '@qingteng.local'
+set provider_id = 'u_' || encode(convert_to(p.nickname, 'UTF8'), 'hex') || '@qingteng.local',
+    identity_data = jsonb_set(
+      i.identity_data,
+      '{email}',
+      to_jsonb('u_' || encode(convert_to(p.nickname, 'UTF8'), 'hex') || '@qingteng.local'::text)
+    )
 from public.profiles p
-where p.id = i.user_id and i.email not like '%@qingteng.local';
+where p.id = i.user_id
+  and i.provider = 'email'
+  and i.provider_id not like '%@qingteng.local';
 
 update public.profile_private pp
 set email = 'u_' || encode(convert_to(p.nickname, 'UTF8'), 'hex') || '@qingteng.local'
