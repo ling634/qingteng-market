@@ -45,6 +45,19 @@ function mapProduct(row: any): IProduct {
 const PRODUCT_SELECT =
   '*, seller:profiles!products_seller_id_fkey(nickname, avatar_url)';
 
+/** 给一批商品挂载「X 人想要」（收藏人数 ∪ 私聊买家数，同一买家只记一次）；视图不可用时静默返回原数组 */
+async function attachWantCounts(products: IProduct[]): Promise<IProduct[]> {
+  if (products.length === 0) return products;
+  const ids = products.map((p) => p.id);
+  const { data, error } = await supabase
+    .from('product_demand')
+    .select('product_id, want_count')
+    .in('product_id', ids);
+  if (error || !data) return products;
+  const map = new Map(data.map((r: any) => [r.product_id, Number(r.want_count)]));
+  return products.map((p) => ({ ...p, wantCount: map.get(p.id) ?? 0 }));
+}
+
 /** 商品详情页的卖家信誉信息 */
 export interface ISellerInfo {
   id: string;
@@ -127,7 +140,7 @@ export async function fetchTopProducts(limit = 3): Promise<IProduct[]> {
     .order('created_at', { ascending: false })
     .limit(limit);
   if (error) throw error;
-  return (data ?? []).map(mapProduct);
+  return attachWantCounts((data ?? []).map(mapProduct));
 }
 
 export async function fetchLatestProducts(limit = 6): Promise<IProduct[]> {
@@ -138,7 +151,7 @@ export async function fetchLatestProducts(limit = 6): Promise<IProduct[]> {
     .order('created_at', { ascending: false })
     .limit(limit);
   if (error) throw error;
-  return (data ?? []).map(mapProduct);
+  return attachWantCounts((data ?? []).map(mapProduct));
 }
 
 /** 分页查询在售商品（不含置顶，置顶单独取） */
@@ -172,7 +185,7 @@ export async function fetchProductsPage(
   if (error) throw error;
   const total = count ?? 0;
   return {
-    items: (data ?? []).map(mapProduct),
+    items: await attachWantCounts((data ?? []).map(mapProduct)),
     total,
     hasMore: to + 1 < total,
   };
@@ -188,7 +201,8 @@ export async function fetchProductById(
     .maybeSingle();
   if (error) throw error;
   if (!data) return null;
-  return { product: mapProduct(data), seller: mapSeller(data) };
+  const [product] = await attachWantCounts([mapProduct(data)]);
+  return { product, seller: mapSeller(data) };
 }
 
 export async function fetchRelatedProducts(
@@ -205,7 +219,7 @@ export async function fetchRelatedProducts(
     .order('created_at', { ascending: false })
     .limit(limit);
   if (error) throw error;
-  return (data ?? []).map(mapProduct);
+  return attachWantCounts((data ?? []).map(mapProduct));
 }
 
 export async function fetchMyProducts(userId: string): Promise<IProduct[]> {
@@ -216,7 +230,7 @@ export async function fetchMyProducts(userId: string): Promise<IProduct[]> {
     .order('created_at', { ascending: false })
     .limit(100);
   if (error) throw error;
-  return (data ?? []).map(mapProduct);
+  return attachWantCounts((data ?? []).map(mapProduct));
 }
 
 export async function fetchProductsByIds(ids: string[]): Promise<IProduct[]> {
@@ -226,7 +240,7 @@ export async function fetchProductsByIds(ids: string[]): Promise<IProduct[]> {
     .select(PRODUCT_SELECT)
     .in('id', ids);
   if (error) throw error;
-  return (data ?? []).map(mapProduct);
+  return attachWantCounts((data ?? []).map(mapProduct));
 }
 
 /** 管理后台：全部商品（含下架） */
@@ -237,7 +251,7 @@ export async function fetchAllProductsAdmin(): Promise<IProduct[]> {
     .order('created_at', { ascending: false })
     .limit(500);
   if (error) throw error;
-  return (data ?? []).map(mapProduct);
+  return attachWantCounts((data ?? []).map(mapProduct));
 }
 
 export interface NewProductInput {
@@ -797,11 +811,13 @@ export async function markAllReportsRead(): Promise<void> {
 export interface IConversationItem {
   id: string;
   productId: string | null;
+  buyerId: string;
+  sellerId: string;
   otherId: string;
   otherNickname: string;
   otherAvatar: string;
   otherVerified: boolean;
-  product?: { id: string; title: string; price: number; image: string };
+  product?: { id: string; title: string; price: number; image: string; status: IProduct['status'] };
   lastMessage: string;
   lastMessageAt: string;
   unreadCount: number;
@@ -823,7 +839,7 @@ export async function fetchConversations(
   const { data, error } = await supabase
     .from('conversations')
     .select(
-      '*, product:products(id, title, price, thumbs, images), buyer:profiles!conversations_buyer_id_fkey(id, nickname, avatar_url, verified), seller:profiles!conversations_seller_id_fkey(id, nickname, avatar_url, verified)',
+      '*, product:products(id, title, price, thumbs, images, status), buyer:profiles!conversations_buyer_id_fkey(id, nickname, avatar_url, verified), seller:profiles!conversations_seller_id_fkey(id, nickname, avatar_url, verified)',
     )
     .or(`buyer_id.eq.${userId},seller_id.eq.${userId}`)
     .order('last_message_at', { ascending: false })
@@ -850,6 +866,8 @@ export async function fetchConversations(
     return {
       id: row.id,
       productId: row.product_id,
+      buyerId: row.buyer_id,
+      sellerId: row.seller_id,
       otherId: other?.id ?? '',
       otherNickname: other?.nickname ?? '同学',
       otherAvatar: other?.avatar_url || DEFAULT_AVATAR,
@@ -860,6 +878,7 @@ export async function fetchConversations(
             title: product.title,
             price: Number(product.price),
             image: product.thumbs?.[0] || product.images?.[0] || '',
+            status: product.status,
           }
         : undefined,
       lastMessage: row.last_message ?? '',
@@ -1005,34 +1024,30 @@ export async function fetchUnreadAdminCount(): Promise<number> {
 }
 
 // ---------------------------------------------------------------
-// 交易记录（本期只读，通常为空）
+// 交易闭环：预订 → 确认收货 → 评价（写入一律走 RPC，见 patch_04.sql）
 // ---------------------------------------------------------------
+
+export type TradeStatus = 'reserved' | 'completed' | 'cancelled';
 
 export interface ITradeRecord {
   id: string;
+  productId: string | null;
   productTitle: string;
   productImage: string;
   buyerId: string;
   sellerId: string;
   price: number;
-  status: 'completed' | 'cancelled';
+  status: TradeStatus;
   buyerRating?: number;
   buyerComment?: string;
-  sellerRating?: number;
-  sellerComment?: string;
   completedAt?: string;
+  createdAt: string;
 }
 
-export async function fetchMyTrades(userId: string): Promise<ITradeRecord[]> {
-  const { data, error } = await supabase
-    .from('trades')
-    .select('*')
-    .or(`buyer_id.eq.${userId},seller_id.eq.${userId}`)
-    .order('created_at', { ascending: false })
-    .limit(100);
-  if (error) throw error;
-  return (data ?? []).map((t: any) => ({
+function mapTrade(t: any): ITradeRecord {
+  return {
     id: t.id,
+    productId: t.product_id ?? null,
     productTitle: t.product_title,
     productImage: t.product_image,
     buyerId: t.buyer_id,
@@ -1041,10 +1056,158 @@ export async function fetchMyTrades(userId: string): Promise<ITradeRecord[]> {
     status: t.status,
     buyerRating: t.buyer_rating ?? undefined,
     buyerComment: t.buyer_comment ?? undefined,
-    sellerRating: t.seller_rating ?? undefined,
-    sellerComment: t.seller_comment ?? undefined,
     completedAt: t.completed_at ? fmtTime(t.completed_at) : undefined,
-  }));
+    createdAt: t.created_at,
+  };
+}
+
+/** 会话上下文里当前生效的交易（同一商品+买卖双方，取最新一条） */
+export async function fetchConversationTrade(
+  productId: string,
+  buyerId: string,
+  sellerId: string,
+): Promise<ITradeRecord | null> {
+  const { data, error } = await supabase
+    .from('trades')
+    .select('*')
+    .eq('product_id', productId)
+    .eq('buyer_id', buyerId)
+    .eq('seller_id', sellerId)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? mapTrade(data) : null;
+}
+
+/** 商品最新一条交易（不限买家）：卖家取消预订后用于找到买家发系统消息 */
+export async function fetchLatestProductTrade(
+  productId: string,
+): Promise<ITradeRecord | null> {
+  const { data, error } = await supabase
+    .from('trades')
+    .select('*')
+    .eq('product_id', productId)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? mapTrade(data) : null;
+}
+
+/** 「我买到的」列表项：交易 + 卖家信息 */
+export interface IPurchase extends ITradeRecord {
+  sellerNickname: string;
+  sellerAvatar: string;
+}
+
+export async function fetchMyPurchases(userId: string): Promise<IPurchase[]> {
+  const { data, error } = await supabase
+    .from('trades')
+    .select('*, seller:profiles!trades_seller_id_fkey(nickname, avatar_url)')
+    .eq('buyer_id', userId)
+    .order('created_at', { ascending: false })
+    .limit(100);
+  if (error) throw error;
+  return (data ?? []).map((t: any) => {
+    const seller = Array.isArray(t.seller) ? t.seller[0] : t.seller;
+    return {
+      ...mapTrade(t),
+      sellerNickname: seller?.nickname ?? '同学',
+      sellerAvatar: seller?.avatar_url || DEFAULT_AVATAR,
+    };
+  });
+}
+
+/** 「信誉评价」收到的评价：交易 + 买家信息（仅已评价的） */
+export interface IReceivedReview extends ITradeRecord {
+  buyerNickname: string;
+  buyerAvatar: string;
+}
+
+export async function fetchReceivedReviews(sellerId: string): Promise<IReceivedReview[]> {
+  const { data, error } = await supabase
+    .from('trades')
+    .select('*, buyer:profiles!trades_buyer_id_fkey(nickname, avatar_url)')
+    .eq('seller_id', sellerId)
+    .not('buyer_rating', 'is', null)
+    .order('completed_at', { ascending: false })
+    .limit(100);
+  if (error) throw error;
+  return (data ?? []).map((t: any) => {
+    const buyer = Array.isArray(t.buyer) ? t.buyer[0] : t.buyer;
+    return {
+      ...mapTrade(t),
+      buyerNickname: buyer?.nickname ?? '同学',
+      buyerAvatar: buyer?.avatar_url || DEFAULT_AVATAR,
+    };
+  });
+}
+
+/** 卖家「标记已预订」的买家候选：就该商品私聊过的买家列表 */
+export interface IProductBuyer {
+  id: string;
+  nickname: string;
+  avatar: string;
+}
+
+export async function fetchProductBuyers(productId: string): Promise<IProductBuyer[]> {
+  const { data, error } = await supabase
+    .from('conversations')
+    .select('buyer_id, buyer:profiles!conversations_buyer_id_fkey(id, nickname, avatar_url)')
+    .eq('product_id', productId);
+  if (error) throw error;
+  return (data ?? []).map((row: any) => {
+    const buyer = Array.isArray(row.buyer) ? row.buyer[0] : row.buyer;
+    return {
+      id: row.buyer_id,
+      nickname: buyer?.nickname ?? '同学',
+      avatar: buyer?.avatar_url || DEFAULT_AVATAR,
+    };
+  });
+}
+
+/** 预订商品（买家自助或卖家指定买家），返回交易 id；商品已被预订/售出时抛错 */
+export async function reserveProduct(productId: string, buyerId: string): Promise<string> {
+  const { data, error } = await supabase.rpc('reserve_product', {
+    p_product_id: productId,
+    p_buyer_id: buyerId,
+  });
+  if (error) throw new Error(error.message);
+  return data as string;
+}
+
+/** 卖家取消预订：商品回到在售 */
+export async function cancelReservation(productId: string): Promise<void> {
+  const { error } = await supabase.rpc('cancel_reservation', { p_product_id: productId });
+  if (error) throw new Error(error.message);
+}
+
+/** 买家确认收货：交易完成，商品标记已售出 */
+export async function confirmReceipt(tradeId: string): Promise<void> {
+  const { error } = await supabase.rpc('confirm_receipt', { p_trade_id: tradeId });
+  if (error) throw new Error(error.message);
+}
+
+/** 买家评价（仅交易完成后、仅一次） */
+export async function rateTrade(tradeId: string, rating: number, comment: string): Promise<void> {
+  const { error } = await supabase.rpc('rate_trade', {
+    p_trade_id: tradeId,
+    p_rating: rating,
+    p_comment: comment,
+  });
+  if (error) throw new Error(error.message);
+}
+
+/** 发送系统消息（居中灰条展示，如「买家已预订该商品」） */
+export async function sendSystemMessage(conversationId: string, senderId: string, content: string): Promise<void> {
+  const { error } = await supabase.from('messages').insert({
+    conversation_id: conversationId,
+    sender_id: senderId,
+    content,
+    type: 'system',
+  });
+  if (error) throw error;
 }
 
 // ---------------------------------------------------------------

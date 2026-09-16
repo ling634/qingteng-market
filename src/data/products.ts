@@ -16,9 +16,11 @@ export interface IProduct {
   sellerId: string;
   sellerNickname: string;
   sellerAvatar: string;
-  status: 'on_sale' | 'sold' | 'offline';
+  status: 'on_sale' | 'reserved' | 'sold' | 'offline';
   createdAt: string;
   is_top: boolean;
   top_expire_at: string | null;
   top_weight: number;
+  /** 「X 人想要」：收藏人数 ∪ 私聊买家数（同一买家只记一次），由 attachWantCounts 挂载 */
+  wantCount?: number;
 }

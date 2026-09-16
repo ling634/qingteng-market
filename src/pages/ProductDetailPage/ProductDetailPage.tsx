@@ -20,6 +20,7 @@ import {
 import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Image } from '@/components/ui/image';
 import {
   Dialog,
@@ -44,9 +45,16 @@ import ProductCard from '@/components/ProductCard';
 import {
   fetchProductById,
   fetchRelatedProducts,
+  fetchProductBuyers,
+  fetchLatestProductTrade,
+  getOrCreateConversation,
   insertReport,
+  reserveProduct,
+  cancelReservation,
+  sendSystemMessage,
   setProductStatus,
   type ISellerInfo,
+  type IProductBuyer,
 } from '@/lib/api';
 import type { IProduct } from '@/data/products';
 
@@ -140,7 +148,7 @@ export default function ProductDetailPage() {
 
   const isOwner = auth.isLoggedIn && product?.sellerId === auth.userId;
 
-  // 卖家管理自己的商品：已售出 / 下架 / 重新上架
+  // 卖家管理自己的商品：下架 / 重新上架
   const handleSetStatus = async (status: IProduct['status']) => {
     if (!product) return;
     try {
@@ -151,14 +159,72 @@ export default function ProductDetailPage() {
         is_top: status === 'on_sale' ? product.is_top : false,
       });
       toast.success(
-        status === 'sold'
-          ? '已标记为「已售出」，商品将从集市下架'
-          : status === 'offline'
-            ? '已下架，可在详情页重新上架'
-            : '已重新上架',
+        status === 'offline' ? '已下架，可在详情页重新上架' : '已重新上架',
       );
     } catch {
       toast.error('操作失败，请稍后重试');
+    }
+  };
+
+  // ---------- 卖家标记预订（选择买家） ----------
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [buyers, setBuyers] = useState<IProductBuyer[]>([]);
+  const [buyersLoading, setBuyersLoading] = useState(false);
+  const [reserving, setReserving] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+
+  const handleOpenPicker = async () => {
+    if (!product) return;
+    setPickerOpen(true);
+    setBuyersLoading(true);
+    try {
+      setBuyers(await fetchProductBuyers(product.id));
+    } catch {
+      setBuyers([]);
+    } finally {
+      setBuyersLoading(false);
+    }
+  };
+
+  // 标记已预订：绑定买家 → 生成交易 → 会话里发系统消息通知买家
+  const handleReserveToBuyer = async (buyer: IProductBuyer) => {
+    if (!product || reserving) return;
+    setReserving(true);
+    try {
+      await reserveProduct(product.id, buyer.id);
+      const convId = await getOrCreateConversation(product.id, buyer.id, auth.userId);
+      await sendSystemMessage(
+        convId,
+        auth.userId,
+        '卖家已将该商品预订给你，请尽快线下交接',
+      );
+      setProduct({ ...product, status: 'reserved', is_top: false });
+      setPickerOpen(false);
+      toast.success(`已预订给「${buyer.nickname}」`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '操作失败，请稍后重试');
+    } finally {
+      setReserving(false);
+    }
+  };
+
+  // 卖家取消预订：商品回到在售，通知买家
+  const handleCancelReservation = async () => {
+    if (!product || cancelling) return;
+    setCancelling(true);
+    try {
+      await cancelReservation(product.id);
+      const trade = await fetchLatestProductTrade(product.id);
+      if (trade) {
+        const convId = await getOrCreateConversation(product.id, trade.buyerId, auth.userId);
+        await sendSystemMessage(convId, auth.userId, '卖家取消了预订，商品已重新在售');
+      }
+      setProduct({ ...product, status: 'on_sale' });
+      toast.success('已取消预订，商品重新在售');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '操作失败，请稍后重试');
+    } finally {
+      setCancelling(false);
     }
   };
 
@@ -232,6 +298,14 @@ export default function ProductDetailPage() {
                   向阳位 · 置顶
                 </div>
               )}
+              {product.status === 'reserved' && (
+                <div className="absolute top-0 left-0 z-10 pointer-events-none">
+                  <div className="w-0 h-0 border-t-[88px] border-r-[88px] border-t-emerald-600 border-r-transparent drop-shadow-md" />
+                  <span className="absolute top-[16px] left-0 w-[64px] text-center text-xs font-bold text-white -rotate-45">
+                    已预订
+                  </span>
+                </div>
+              )}
               {product.status === 'sold' && (
                 <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
                   <span className="bg-white/95 text-foreground font-bold px-5 py-2 rounded-full text-sm shadow-md">
@@ -302,6 +376,11 @@ export default function ProductDetailPage() {
               <h1 className="text-xl md:text-2xl font-bold text-foreground leading-snug">
                 {product.title}
               </h1>
+              {!!product.wantCount && (
+                <p className="text-xs text-muted-foreground mt-1">
+                  {product.wantCount} 人想要
+                </p>
+              )}
             </div>
 
             {/* 价格 */}
@@ -435,12 +514,21 @@ export default function ProductDetailPage() {
                 </Button>
                 <Button
                   className="flex-1 h-11 gap-2"
-                  onClick={() => void handleSetStatus('sold')}
+                  onClick={() => void handleOpenPicker()}
                 >
                   <CheckCircle2 className="size-5" />
-                  标记已售出
+                  标记已预订
                 </Button>
               </>
+            ) : product.status === 'reserved' ? (
+              <Button
+                variant="secondary"
+                className="flex-1 h-11"
+                disabled={cancelling}
+                onClick={() => void handleCancelReservation()}
+              >
+                {cancelling ? '处理中...' : '取消预订'}
+              </Button>
             ) : (
               <Button
                 className="flex-1 h-11"
@@ -462,6 +550,10 @@ export default function ProductDetailPage() {
               {product.status === 'sold' ? (
                 <Button disabled className="flex-1 h-11 text-base">
                   已售出
+                </Button>
+              ) : product.status === 'reserved' ? (
+                <Button disabled className="flex-1 h-11 text-base">
+                  已被预订
                 </Button>
               ) : (
                 <Button onClick={handleChat} className="flex-1 h-11 text-base gap-2">
@@ -487,13 +579,22 @@ export default function ProductDetailPage() {
                 下架
               </Button>
               <Button
-                onClick={() => void handleSetStatus('sold')}
+                onClick={() => void handleOpenPicker()}
                 className="shadow-lg rounded-full gap-2 h-12 px-5"
               >
                 <CheckCircle2 className="size-5" />
-                标记已售出
+                标记已预订
               </Button>
             </>
+          ) : product.status === 'reserved' ? (
+            <Button
+              variant="secondary"
+              disabled={cancelling}
+              onClick={() => void handleCancelReservation()}
+              className="shadow-lg rounded-full h-12 px-5"
+            >
+              {cancelling ? '处理中...' : '取消预订'}
+            </Button>
           ) : (
             <Button
               onClick={() => void handleSetStatus('on_sale')}
@@ -516,6 +617,10 @@ export default function ProductDetailPage() {
               <Button disabled className="shadow-lg rounded-full h-12 px-5">
                 已售出
               </Button>
+            ) : product.status === 'reserved' ? (
+              <Button disabled className="shadow-lg rounded-full h-12 px-5">
+                已被预订
+              </Button>
             ) : (
               <Button
                 onClick={handleChat}
@@ -528,6 +633,49 @@ export default function ProductDetailPage() {
           </>
         )}
       </div>
+
+      {/* 标记已预订：从私聊过的买家中选择 */}
+      <Dialog open={pickerOpen} onOpenChange={setPickerOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>标记已预订</DialogTitle>
+            <DialogDescription>
+              选择预订该商品的买家（仅显示私聊过本商品的用户）
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-72 overflow-y-auto -mx-1 px-1">
+            {buyersLoading ? (
+              <p className="py-8 text-center text-sm text-muted-foreground">加载中...</p>
+            ) : buyers.length === 0 ? (
+              <p className="py-8 text-center text-sm text-muted-foreground leading-relaxed">
+                还没有买家私聊过这个商品，
+                <br />
+                可以让买家在私聊里自己点「预订」
+              </p>
+            ) : (
+              <div className="space-y-1 py-1">
+                {buyers.map((b) => (
+                  <button
+                    key={b.id}
+                    disabled={reserving}
+                    onClick={() => void handleReserveToBuyer(b)}
+                    className="w-full flex items-center gap-3 rounded-lg px-2 py-2.5 hover:bg-muted transition-colors text-left disabled:opacity-50"
+                  >
+                    <Avatar className="size-10">
+                      <AvatarImage src={b.avatar} />
+                      <AvatarFallback>{b.nickname.slice(0, 1)}</AvatarFallback>
+                    </Avatar>
+                    <span className="flex-1 text-sm font-medium truncate">{b.nickname}</span>
+                    <span className="text-xs text-primary shrink-0">
+                      {reserving ? '处理中...' : '预订给TA'}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* 全屏大图查看器：点商品图打开，完整比例显示，可左右切换 */}
       {viewerOpen && (

@@ -7,14 +7,13 @@ import {
   User,
   Package,
   Heart,
-  MessageSquare,
+  ShoppingBag,
   Star,
   Settings,
   CheckCircle2,
   LogOut,
   Shield,
   Award,
-  Clock,
   Camera,
   Edit3,
   MessageSquareText,
@@ -25,10 +24,22 @@ import {
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import AvatarCropDialog from '@/components/AvatarCropDialog';
+import RateTradeDialog from '@/components/RateTradeDialog';
+import StarRating from '@/components/StarRating';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import {
   Dialog,
   DialogContent,
@@ -55,13 +66,18 @@ import {
   fetchMyProducts,
   fetchProductsByIds,
   fetchMyFeedbacks,
-  fetchMyTrades,
+  fetchMyPurchases,
+  fetchReceivedReviews,
   fetchMyProfile,
+  getOrCreateConversation,
+  confirmReceipt,
+  sendSystemMessage,
   submitFeedback,
   appendFeedbackMessage,
   deleteProduct,
   type IFeedback,
-  type ITradeRecord,
+  type IPurchase,
+  type IReceivedReview,
 } from '@/lib/api';
 import { uploadMiscImage } from '@/lib/image';
 import type { IProduct } from '@/data/products';
@@ -90,7 +106,8 @@ function MyProductCard({
   product: IProduct;
   onRequestDelete: (p: IProduct) => void;
 }) {
-  const deletable = product.status !== 'on_sale';
+  // 已预订的商品处于交接流程中，不可删除；在售中的走下架流程
+  const deletable = product.status === 'sold' || product.status === 'offline';
   const timerRef = useRef<number | null>(null);
   const suppressClickRef = useRef(false);
 
@@ -145,12 +162,11 @@ function MyProductCard({
   );
 }
 
-/** 「我的」页七个功能区 */
+/** 「我的」页六个功能区 */
 const PROFILE_TABS = [
   { key: 'selling', label: '我的在售', icon: Package },
   { key: 'favorites', label: '我的收藏', icon: Heart },
-  { key: 'messages', label: '我的私信', icon: MessageSquare },
-  { key: 'trades', label: '交易记录', icon: Clock },
+  { key: 'purchases', label: '我买到的', icon: ShoppingBag },
   { key: 'reputation', label: '信誉评价', icon: Award },
   { key: 'feedback', label: '意见反馈', icon: MessageSquareText },
   { key: 'settings', label: '个人资料', icon: Settings },
@@ -186,7 +202,11 @@ export default function ProfilePage() {
   const [deleting, setDeleting] = useState(false);
   const [favProducts, setFavProducts] = useState<IProduct[]>([]);
   const [myFeedbacks, setMyFeedbacks] = useState<IFeedback[]>([]);
-  const [myTrades, setMyTrades] = useState<ITradeRecord[]>([]);
+  const [purchases, setPurchases] = useState<IPurchase[]>([]);
+  const [reviews, setReviews] = useState<IReceivedReview[]>([]);
+  const [receiptTarget, setReceiptTarget] = useState<IPurchase | null>(null);
+  const [receiptBusy, setReceiptBusy] = useState(false);
+  const [rateTarget, setRateTarget] = useState<IPurchase | null>(null);
   const [myRating, setMyRating] = useState(5.0);
   const [myTags, setMyTags] = useState<string[]>([]);
   const [nicknameInput, setNicknameInput] = useState('');
@@ -214,15 +234,17 @@ export default function ProfilePage() {
   const loadMyData = useCallback(async () => {
     if (!auth.isLoggedIn) return;
     const uid = auth.userId;
-    const [products, feedbacks, trades, profile] = await Promise.all([
+    const [products, feedbacks, purchaseList, reviewList, profile] = await Promise.all([
       fetchMyProducts(uid).catch(() => [] as IProduct[]),
       fetchMyFeedbacks(uid).catch(() => [] as IFeedback[]),
-      fetchMyTrades(uid).catch(() => [] as ITradeRecord[]),
+      fetchMyPurchases(uid).catch(() => [] as IPurchase[]),
+      fetchReceivedReviews(uid).catch(() => [] as IReceivedReview[]),
       fetchMyProfile(uid).catch(() => null),
     ]);
     setMyProducts(products);
     setMyFeedbacks(feedbacks);
-    setMyTrades(trades);
+    setPurchases(purchaseList);
+    setReviews(reviewList);
     if (profile) {
       setMyRating(profile.rating);
       setMyTags(profile.reputationTags);
@@ -237,11 +259,46 @@ export default function ProfilePage() {
       setMyProducts([]);
       setFavProducts([]);
       setMyFeedbacks([]);
-      setMyTrades([]);
+      setPurchases([]);
+      setReviews([]);
       setMyRating(5.0);
       setMyTags([]);
     }
   }, [auth.isLoggedIn, loadMyData]);
+
+  // 买家在「我买到的」里确认收货：交易完成 + 私信里通知卖家
+  const handleConfirmReceipt = async () => {
+    if (!receiptTarget || receiptBusy) return;
+    setReceiptBusy(true);
+    try {
+      await confirmReceipt(receiptTarget.id);
+      if (receiptTarget.productId) {
+        const convId = await getOrCreateConversation(
+          receiptTarget.productId,
+          auth.userId,
+          receiptTarget.sellerId,
+        );
+        await sendSystemMessage(convId, auth.userId, '买家已确认收货，交易完成');
+      }
+      toast.success('已确认收货，交易完成，快去评价吧');
+      setReceiptTarget(null);
+      void loadMyData();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '操作失败，请稍后重试');
+    } finally {
+      setReceiptBusy(false);
+    }
+  };
+
+  // 联系卖家：打开（或创建）会话并跳转消息页
+  const handleContactSeller = async (p: IPurchase) => {
+    try {
+      const convId = await getOrCreateConversation(p.productId, auth.userId, p.sellerId);
+      navigate(`/messages?conv=${convId}`);
+    } catch {
+      toast.error('打开会话失败，请稍后重试');
+    }
+  };
 
   // 删除已售出/已下架的商品（不可恢复）
   const handleDeleteConfirm = async () => {
@@ -470,9 +527,9 @@ export default function ProfilePage() {
                     </div>
                     <div className="text-center">
                       <div className="text-lg font-bold text-foreground">
-                        {myTrades.length}
+                        {purchases.filter((p) => p.status === 'completed').length}
                       </div>
-                      <div className="text-xs text-muted-foreground">交易</div>
+                      <div className="text-xs text-muted-foreground">买到</div>
                     </div>
                     <div className="text-center flex items-center gap-1">
                       <Star className="size-4 text-amber-500 fill-amber-500" />
@@ -649,79 +706,127 @@ export default function ProfilePage() {
             )}
           </TabsContent>
 
-          {/* 我的私信 */}
-          <TabsContent value="messages" className="mt-0">
+          {/* 我买到的（预订 → 确认收货 → 评价 的买家侧入口） */}
+          <TabsContent value="purchases" className="mt-0">
             {auth.isLoggedIn ? (
-              <div className="flex flex-col items-center justify-center py-16 text-center">
-                <div className="size-14 rounded-full bg-muted flex items-center justify-center mb-3">
-                  <MessageSquare className="size-7 text-muted-foreground" />
-                </div>
-                <h3 className="text-base font-medium mb-1">站内私信</h3>
-                <p className="text-sm text-muted-foreground mb-4">
-                  点击下方按钮进入消息中心
-                </p>
-                <Button onClick={() => navigate('/messages')}>查看消息</Button>
-              </div>
-            ) : (
-              <EmptyLoginTip onLogin={() => { setAuthMode('login'); setAuthOpen(true); }} />
-            )}
-          </TabsContent>
-
-          {/* 交易记录 */}
-          <TabsContent value="trades" className="mt-0">
-            {auth.isLoggedIn ? (
-              <div className="space-y-3">
-                {myTrades.map((t) => {
-                  const isBuyer = t.buyerId === auth.userId;
-                  return (
+              purchases.length > 0 ? (
+                <div className="space-y-3">
+                  {purchases.map((p) => (
                     <div
-                      key={t.id}
-                      className="bg-card border border-border/60 rounded-xl p-4 flex gap-3"
+                      key={p.id}
+                      className="bg-card border border-border/60 rounded-xl overflow-hidden"
                     >
-                      <Image
-                        src={t.productImage}
-                        alt=""
-                        className="size-20 rounded-lg object-cover shrink-0"
-                      />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-start justify-between gap-2">
-                          <h4 className="font-medium text-sm line-clamp-1">
-                            {t.productTitle}
+                      {/* 卖家信息 + 交易状态 */}
+                      <div className="flex items-center gap-2 px-4 pt-3">
+                        <Image
+                          src={p.sellerAvatar}
+                          alt=""
+                          className="size-6 rounded-full object-cover"
+                        />
+                        <span className="text-sm font-medium truncate">
+                          {p.sellerNickname}
+                        </span>
+                        <span
+                          className={cn(
+                            'ml-auto text-sm font-medium shrink-0',
+                            p.status === 'completed'
+                              ? 'text-orange-500'
+                              : p.status === 'reserved'
+                                ? 'text-amber-600'
+                                : 'text-muted-foreground',
+                          )}
+                        >
+                          {p.status === 'completed'
+                            ? '交易成功'
+                            : p.status === 'reserved'
+                              ? '待收货'
+                              : '已取消'}
+                        </span>
+                      </div>
+                      {/* 商品信息（点击进详情） */}
+                      <div
+                        onClick={() => p.productId && navigate(`/products/${p.productId}`)}
+                        className={cn(
+                          'flex gap-3 px-4 py-3',
+                          p.productId && 'cursor-pointer',
+                        )}
+                      >
+                        <Image
+                          src={p.productImage}
+                          alt=""
+                          className="size-20 rounded-lg object-cover shrink-0 bg-muted"
+                        />
+                        <div className="flex-1 min-w-0 flex flex-col">
+                          <h4 className="font-medium text-sm line-clamp-2 leading-snug">
+                            {p.productTitle}
                           </h4>
-                          <span className="text-primary font-bold shrink-0">
-                            {formatPrice(t.price)}
+                          <span className="text-primary font-bold mt-auto">
+                            {formatPrice(p.price)}
                           </span>
-                        </div>
-                        <div className="flex items-center justify-between mt-2 pt-2 border-t border-border/40">
-                          <span className="text-xs text-muted-foreground">
-                            {t.completedAt || ''} · {t.status === 'completed' ? '交易完成' : '已取消'}
-                          </span>
-                          <Badge variant="default" className="text-xs h-5">
-                            {isBuyer ? '我是买家' : '我是卖家'}
-                          </Badge>
                         </div>
                       </div>
+                      {/* 操作区 */}
+                      {p.status !== 'cancelled' && (
+                        <div className="flex items-center justify-end gap-2 px-4 pb-3">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-8 rounded-full"
+                            onClick={() => void handleContactSeller(p)}
+                          >
+                            联系卖家
+                          </Button>
+                          {p.status === 'reserved' && (
+                            <Button
+                              size="sm"
+                              className="h-8 rounded-full"
+                              onClick={() => setReceiptTarget(p)}
+                            >
+                              确认收货
+                            </Button>
+                          )}
+                          {p.status === 'completed' &&
+                            (p.buyerRating ? (
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                className="h-8 rounded-full"
+                                disabled
+                              >
+                                已评价
+                              </Button>
+                            ) : (
+                              <Button
+                                size="sm"
+                                className="h-8 rounded-full bg-amber-400 hover:bg-amber-500 text-white"
+                                onClick={() => setRateTarget(p)}
+                              >
+                                去评价
+                              </Button>
+                            ))}
+                        </div>
+                      )}
                     </div>
-                  );
-                })}
-                {myTrades.length === 0 && (
-                  <div className="flex flex-col items-center justify-center py-16 text-center">
-                    <div className="size-14 rounded-full bg-muted flex items-center justify-center mb-3">
-                      <Clock className="size-7 text-muted-foreground" />
-                    </div>
-                    <h3 className="text-base font-medium mb-1">暂无交易记录</h3>
-                    <p className="text-sm text-muted-foreground">
-                      完成的线下交易将在这里展示
-                    </p>
+                  ))}
+                </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center py-16 text-center">
+                  <div className="size-14 rounded-full bg-muted flex items-center justify-center mb-3">
+                    <ShoppingBag className="size-7 text-muted-foreground" />
                   </div>
-                )}
-              </div>
+                  <h3 className="text-base font-medium mb-1">还没有买到商品</h3>
+                  <p className="text-sm text-muted-foreground mb-4">
+                    在私聊里点击「预订」，交易就会出现在这里
+                  </p>
+                  <Button onClick={() => navigate('/products')}>去逛逛</Button>
+                </div>
+              )
             ) : (
               <EmptyLoginTip onLogin={() => { setAuthMode('login'); setAuthOpen(true); }} />
             )}
           </TabsContent>
 
-          {/* 信誉评价 */}
+          {/* 信誉评价：平均分 + 收到的评价列表 */}
           <TabsContent value="reputation" className="mt-0">
             {auth.isLoggedIn ? (
               <div className="space-y-5">
@@ -729,16 +834,11 @@ export default function ProfilePage() {
                   <div className="flex items-center gap-4">
                     <div className="text-center">
                       <div className="text-3xl font-bold text-primary">{myRating.toFixed(1)}</div>
-                      <div className="flex items-center justify-center gap-0.5 mt-1">
-                        {[1, 2, 3, 4, 5].map((i) => (
-                          <Star
-                            key={i}
-                            className="size-4 text-amber-500 fill-amber-500"
-                          />
-                        ))}
+                      <div className="mt-1">
+                        <StarRating value={myRating} className="size-4" />
                       </div>
                       <div className="text-xs text-muted-foreground mt-1">
-                        基于 {myTrades.length} 次评价
+                        基于 {reviews.length} 次评价
                       </div>
                     </div>
                     <div className="flex-1">
@@ -763,40 +863,33 @@ export default function ProfilePage() {
                 <div>
                   <h3 className="font-semibold text-sm mb-3">收到的评价</h3>
                   <div className="space-y-3">
-                    {myTrades.map((t) => {
-                      const isBuyer = t.buyerId === auth.userId;
-                      const comment = isBuyer ? t.sellerComment : t.buyerComment;
-                      const rating = isBuyer ? t.sellerRating : t.buyerRating;
-                      if (!comment) return null;
-                      return (
-                        <div
-                          key={t.id}
-                          className="bg-card border border-border/60 rounded-xl p-4"
-                        >
-                          <div className="flex items-center gap-2 mb-2">
-                            <span className="font-medium text-sm">
-                              {isBuyer ? '卖家' : '买家'}的评价
-                            </span>
-                            <div className="flex items-center gap-0.5 ml-auto">
-                              {Array.from({ length: rating || 0 }).map((_, i) => (
-                                <Star
-                                  key={i}
-                                  className="size-3.5 text-amber-500 fill-amber-500"
-                                />
-                              ))}
-                            </div>
-                          </div>
-                          <p className="text-sm text-foreground/80">{comment}</p>
-                          <p className="text-xs text-muted-foreground mt-2">
-                            {t.completedAt || ''} · 关于「{t.productTitle}」
-                          </p>
+                    {reviews.map((r) => (
+                      <div
+                        key={r.id}
+                        className="bg-card border border-border/60 rounded-xl p-4"
+                      >
+                        <div className="flex items-center gap-2 mb-2">
+                          <Image
+                            src={r.buyerAvatar}
+                            alt=""
+                            className="size-7 rounded-full object-cover"
+                          />
+                          <span className="font-medium text-sm truncate">
+                            {r.buyerNickname}
+                          </span>
+                          <span className="ml-auto shrink-0">
+                            <StarRating value={r.buyerRating ?? 0} className="size-3.5" />
+                          </span>
                         </div>
-                      );
-                    })}
-                    {myTrades.every((t) => {
-                      const isBuyer = t.buyerId === auth.userId;
-                      return !(isBuyer ? t.sellerComment : t.buyerComment);
-                    }) && (
+                        {r.buyerComment && (
+                          <p className="text-sm text-foreground/80">{r.buyerComment}</p>
+                        )}
+                        <p className="text-xs text-muted-foreground mt-2">
+                          {r.completedAt || ''} · 关于「{r.productTitle}」
+                        </p>
+                      </div>
+                    ))}
+                    {reviews.length === 0 && (
                       <div className="bg-card border border-border/60 rounded-xl p-8 text-center text-sm text-muted-foreground">
                         还没有收到评价
                       </div>
@@ -887,6 +980,40 @@ export default function ProfilePage() {
         onClose={() => setCropFile(null)}
         onConfirm={(f) => void handleCropConfirm(f)}
         busy={avatarUploading}
+      />
+
+      {/* 确认收货二次确认 */}
+      <AlertDialog
+        open={!!receiptTarget}
+        onOpenChange={(o) => !o && setReceiptTarget(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>确认已收到商品？</AlertDialogTitle>
+            <AlertDialogDescription>
+              确认后「{receiptTarget?.productTitle}」交易完成，商品标记为已售出，之后可以评价卖家。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={receiptBusy}>再想想</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={receiptBusy}
+              onClick={(e) => {
+                e.preventDefault();
+                void handleConfirmReceipt();
+              }}
+            >
+              {receiptBusy ? '处理中...' : '确认收货'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* 评价弹窗 */}
+      <RateTradeDialog
+        trade={rateTarget}
+        onClose={() => setRateTarget(null)}
+        onRated={() => void loadMyData()}
       />
 
       {/* 登录/注册弹窗 */}

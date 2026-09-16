@@ -12,20 +12,37 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Image } from '@/components/ui/image';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { useApp } from '@/context/AppContext';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
+import RateTradeDialog from '@/components/RateTradeDialog';
 import {
   fetchConversations,
+  fetchConversationTrade,
   fetchMessages,
   fetchProductById,
   getOrCreateConversation,
   markAllMessagesRead,
   markConversationRead,
+  reserveProduct,
+  cancelReservation,
+  confirmReceipt,
   sendMessage,
+  sendSystemMessage,
   type IConversationItem,
   type IChatMessage,
+  type ITradeRecord,
 } from '@/lib/api';
 
 function fmtMsgTime(iso: string): string {
@@ -231,6 +248,116 @@ export default function MessagesPage() {
     [conversations, activeId],
   );
 
+  // ---------- 交易闭环：当前会话关联商品的交易状态 ----------
+  const [trade, setTrade] = useState<ITradeRecord | null>(null);
+  const [tradeBusy, setTradeBusy] = useState(false);
+  const [confirmAction, setConfirmAction] = useState<
+    null | 'reserve' | 'reserveTo' | 'receipt' | 'cancel'
+  >(null);
+  const [rateTarget, setRateTarget] = useState<ITradeRecord | null>(null);
+
+  const iAmBuyer = !!activeConv && activeConv.buyerId === myId;
+
+  const loadTrade = useCallback(async () => {
+    if (!activeConv?.product || !myId) {
+      setTrade(null);
+      return;
+    }
+    try {
+      setTrade(
+        await fetchConversationTrade(
+          activeConv.product.id,
+          activeConv.buyerId,
+          activeConv.sellerId,
+        ),
+      );
+    } catch {
+      // 读取失败保持旧状态
+    }
+  }, [activeConv, myId]);
+
+  // 打开会话 / 收到系统消息（对方完成预订、确认收货等操作）时刷新交易状态
+  useEffect(() => {
+    void loadTrade();
+  }, [loadTrade]);
+  useEffect(() => {
+    const last = messages[messages.length - 1];
+    if (last?.type === 'system' && last.conversationId === activeId) {
+      void loadTrade();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages]);
+
+  // 交易操作后同步会话列表里的商品状态角标
+  const patchConvProductStatus = (status: 'on_sale' | 'reserved' | 'sold') => {
+    setConversations((prev) =>
+      prev.map((c) =>
+        c.id === activeId && c.product ? { ...c, product: { ...c.product, status } } : c,
+      ),
+    );
+  };
+
+  // 买家点「预订」/ 卖家点「预订给TA」
+  const doReserve = async () => {
+    if (!activeConv?.product || !myId || tradeBusy) return;
+    const buyerId = iAmBuyer ? myId : activeConv.otherId;
+    setTradeBusy(true);
+    try {
+      await reserveProduct(activeConv.product.id, buyerId);
+      await sendSystemMessage(
+        activeConv.id,
+        myId,
+        iAmBuyer
+          ? '买家已预订该商品，请尽快线下交接'
+          : '卖家已将该商品预订给你，请尽快线下交接',
+      );
+      patchConvProductStatus('reserved');
+      await loadTrade();
+      toast.success('预订成功，请尽快线下交接');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '操作失败，请稍后重试');
+    } finally {
+      setTradeBusy(false);
+      setConfirmAction(null);
+    }
+  };
+
+  // 买家「确认收货」
+  const doReceipt = async () => {
+    if (!trade || !activeConv || !myId || tradeBusy) return;
+    setTradeBusy(true);
+    try {
+      await confirmReceipt(trade.id);
+      await sendSystemMessage(activeConv.id, myId, '买家已确认收货，交易完成');
+      patchConvProductStatus('sold');
+      await loadTrade();
+      toast.success('已确认收货，交易完成，快去评价吧');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '操作失败，请稍后重试');
+    } finally {
+      setTradeBusy(false);
+      setConfirmAction(null);
+    }
+  };
+
+  // 卖家「取消预订」
+  const doCancel = async () => {
+    if (!activeConv?.product || !myId || tradeBusy) return;
+    setTradeBusy(true);
+    try {
+      await cancelReservation(activeConv.product.id);
+      await sendSystemMessage(activeConv.id, myId, '卖家取消了预订，商品已重新在售');
+      patchConvProductStatus('on_sale');
+      await loadTrade();
+      toast.success('已取消预订');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '操作失败，请稍后重试');
+    } finally {
+      setTradeBusy(false);
+      setConfirmAction(null);
+    }
+  };
+
   const filteredConvs = useMemo(() => {
     if (!keyword.trim()) return conversations;
     const kw = keyword.trim().toLowerCase();
@@ -430,32 +557,141 @@ export default function MessagesPage() {
                 </Button>
               </div>
 
-              {/* 关联商品卡片 */}
+              {/* 关联商品卡片 + 交易操作（预订 / 确认收货 / 评价） */}
               {activeConv.product && (
-                <div
-                  onClick={() => navigate(`/products/${activeConv.product!.id}`)}
-                  className="mx-4 my-3 p-3 bg-primary/5 border border-primary/20 rounded-xl flex items-center gap-3 cursor-pointer hover:bg-primary/10 transition-colors"
-                >
-                  {activeConv.product.image && (
-                    <Image
-                      src={activeConv.product.image}
-                      alt=""
-                      className="size-14 rounded-lg object-cover shrink-0"
-                    />
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-foreground truncate">
-                      {activeConv.product.title}
-                    </p>
-                    <p className="text-primary font-semibold text-sm">
-                      ¥{activeConv.product.price}
-                    </p>
+                <div className="mx-4 my-3 p-3 bg-primary/5 border border-primary/20 rounded-xl flex items-center gap-3">
+                  <div
+                    onClick={() => navigate(`/products/${activeConv.product!.id}`)}
+                    className="flex items-center gap-3 flex-1 min-w-0 cursor-pointer"
+                  >
+                    {activeConv.product.image && (
+                      <Image
+                        src={activeConv.product.image}
+                        alt=""
+                        className="size-14 rounded-lg object-cover shrink-0"
+                      />
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-foreground truncate">
+                        {activeConv.product.title}
+                      </p>
+                      <p className="text-primary font-semibold text-sm">
+                        ¥{activeConv.product.price}
+                      </p>
+                    </div>
                   </div>
-                  <Badge variant="secondary" className="text-xs shrink-0">
-                    商品
-                  </Badge>
+                  <div className="shrink-0 flex items-center gap-2">
+                    {trade?.status === 'reserved' ? (
+                      iAmBuyer ? (
+                        <Button
+                          size="sm"
+                          className="h-8"
+                          disabled={tradeBusy}
+                          onClick={() => setConfirmAction('receipt')}
+                        >
+                          确认收货
+                        </Button>
+                      ) : (
+                        <>
+                          <span className="text-xs text-muted-foreground hidden sm:inline">
+                            等待买家确认收货
+                          </span>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            className="h-8"
+                            disabled={tradeBusy}
+                            onClick={() => setConfirmAction('cancel')}
+                          >
+                            取消预订
+                          </Button>
+                        </>
+                      )
+                    ) : trade?.status === 'completed' ? (
+                      iAmBuyer && !trade.buyerRating ? (
+                        <Button
+                          size="sm"
+                          className="h-8 bg-amber-500 hover:bg-amber-600 text-white"
+                          onClick={() => setRateTarget(trade)}
+                        >
+                          去评价
+                        </Button>
+                      ) : (
+                        <Badge variant="secondary" className="text-xs">
+                          {iAmBuyer ? '已评价' : '交易完成'}
+                        </Badge>
+                      )
+                    ) : activeConv.product.status === 'on_sale' ? (
+                      <Button
+                        size="sm"
+                        className="h-8"
+                        disabled={tradeBusy}
+                        onClick={() => setConfirmAction(iAmBuyer ? 'reserve' : 'reserveTo')}
+                      >
+                        预订
+                      </Button>
+                    ) : (
+                      <Badge variant="secondary" className="text-xs">
+                        {activeConv.product.status === 'reserved'
+                          ? '已被预订'
+                          : activeConv.product.status === 'sold'
+                            ? '已售出'
+                            : '已下架'}
+                      </Badge>
+                    )}
+                  </div>
                 </div>
               )}
+
+              {/* 交易二次确认弹窗 */}
+              <AlertDialog
+                open={!!confirmAction}
+                onOpenChange={(o) => !o && setConfirmAction(null)}
+              >
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>
+                      {confirmAction === 'reserve' || confirmAction === 'reserveTo'
+                        ? '确认预订该商品？'
+                        : confirmAction === 'receipt'
+                          ? '确认已收到商品？'
+                          : '取消该预订？'}
+                    </AlertDialogTitle>
+                    <AlertDialogDescription>
+                      {confirmAction === 'reserve' || confirmAction === 'reserveTo'
+                        ? '预订后商品将标记为「已预订」并从集市隐藏购买入口，请尽快线下交接。'
+                        : confirmAction === 'receipt'
+                          ? '确认后交易完成，商品标记为已售出，之后可以评价卖家。'
+                          : '取消后商品将重新变为在售状态。'}
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel disabled={tradeBusy}>再想想</AlertDialogCancel>
+                    <AlertDialogAction
+                      disabled={tradeBusy}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        if (confirmAction === 'reserve' || confirmAction === 'reserveTo') {
+                          void doReserve();
+                        } else if (confirmAction === 'receipt') {
+                          void doReceipt();
+                        } else {
+                          void doCancel();
+                        }
+                      }}
+                    >
+                      {tradeBusy ? '处理中...' : '确认'}
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+
+              {/* 评价弹窗 */}
+              <RateTradeDialog
+                trade={rateTarget}
+                onClose={() => setRateTarget(null)}
+                onRated={() => void loadTrade()}
+              />
 
               {/* 安全提示 */}
               <div className="mx-4 mb-3 py-2 px-3 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-2 text-xs">

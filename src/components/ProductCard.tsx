@@ -53,7 +53,16 @@ export default function ProductCard({ product }: ProductCardProps) {
         >
           <Heart className={cn('size-4', fav && 'fill-current')} />
         </button>
-        {product.status !== 'on_sale' && (
+        {/* 已预订：左上角绿色三角形角标（不加遮罩，商品仍在交接流程中） */}
+        {product.status === 'reserved' && (
+          <div className="absolute top-0 left-0 z-10 pointer-events-none">
+            <div className="w-0 h-0 border-t-[56px] border-r-[56px] border-t-emerald-600 border-r-transparent drop-shadow-sm" />
+            <span className="absolute top-[9px] left-0 w-[42px] text-center text-[9px] font-bold text-white -rotate-45">
+              已预订
+            </span>
+          </div>
+        )}
+        {(product.status === 'sold' || product.status === 'offline') && (
           <div className="absolute inset-0 bg-black/35 flex items-center justify-center z-10">
             <span className="bg-background/95 text-foreground text-xs font-semibold px-2.5 py-1 rounded-full shadow">
               {product.status === 'sold' ? '已售出' : '已下架'}
@@ -79,6 +88,11 @@ export default function ProductCard({ product }: ProductCardProps) {
           {product.originalPrice && (
             <span className="text-[11px] md:text-xs text-muted-foreground line-through">
               {formatPrice(product.originalPrice)}
+            </span>
+          )}
+          {!!product.wantCount && (
+            <span className="text-[11px] md:text-xs text-muted-foreground ml-auto shrink-0">
+              {product.wantCount}人想要
             </span>
           )}
         </div>
