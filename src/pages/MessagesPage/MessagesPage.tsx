@@ -3,9 +3,9 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import {
   Search,
   Send,
-  Shield,
   ArrowLeft,
-  MoreVertical,
+  Droplets,
+  Loader2,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '@/components/ui/button';
@@ -22,6 +22,13 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { useApp } from '@/context/AppContext';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
@@ -31,6 +38,7 @@ import {
   fetchConversations,
   fetchConversationTrade,
   fetchMessages,
+  fetchPayQr,
   fetchProductById,
   getOrCreateConversation,
   markAllMessagesRead,
@@ -257,6 +265,24 @@ export default function MessagesPage() {
   const [rateTarget, setRateTarget] = useState<ITradeRecord | null>(null);
 
   const iAmBuyer = !!activeConv && activeConv.buyerId === myId;
+
+  // ---------- 去浇灌：买家查看卖家收款码 ----------
+  const [poolQrOpen, setPoolQrOpen] = useState(false);
+  const [poolQr, setPoolQr] = useState<string | null>(null);
+  const [poolQrLoading, setPoolQrLoading] = useState(false);
+
+  const handleOpenPoolQr = async () => {
+    if (!activeConv) return;
+    setPoolQrOpen(true);
+    setPoolQrLoading(true);
+    try {
+      setPoolQr(await fetchPayQr(activeConv.sellerId));
+    } catch {
+      setPoolQr(null);
+    } finally {
+      setPoolQrLoading(false);
+    }
+  };
 
   const loadTrade = useCallback(async () => {
     if (!activeConv?.product || !myId) {
@@ -552,9 +578,17 @@ export default function MessagesPage() {
                     {activeConv.otherVerified ? '✓ 已认证学生' : '未认证'}
                   </div>
                 </div>
-                <Button variant="ghost" size="icon" className="size-8">
-                  <MoreVertical className="size-4" />
-                </Button>
+                {/* 去浇灌：买家查看卖家收款码（卖家侧不显示） */}
+                {iAmBuyer && (
+                  <Button
+                    size="sm"
+                    onClick={() => void handleOpenPoolQr()}
+                    className="h-8 gap-1 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white shrink-0"
+                  >
+                    <Droplets className="size-3.5" />
+                    去浇灌
+                  </Button>
+                )}
               </div>
 
               {/* 关联商品卡片 + 交易操作（预订 / 确认收货 / 评价） */}
@@ -693,14 +727,54 @@ export default function MessagesPage() {
                 onRated={() => void loadTrade()}
               />
 
-              {/* 安全提示 */}
-              <div className="mx-4 mb-3 py-2 px-3 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-2 text-xs">
-                <Shield className="size-4 text-amber-600 shrink-0 mt-0.5" />
-                <p className="text-amber-800 leading-relaxed">
-                  <span className="font-medium">安全提醒：</span>
-                  请勿添加微信/QQ等外部联系方式，所有沟通请使用站内私信，谨防诈骗。
-                </p>
-              </div>
+              {/* 去浇灌：查看卖家收款码 */}
+              <Dialog open={poolQrOpen} onOpenChange={setPoolQrOpen}>
+                <DialogContent className="sm:max-w-sm">
+                  {poolQrLoading ? (
+                    <div className="py-10 flex items-center justify-center">
+                      <Loader2 className="size-6 animate-spin text-muted-foreground" />
+                    </div>
+                  ) : poolQr ? (
+                    <>
+                      <DialogHeader>
+                        <DialogTitle className="flex items-center gap-1.5">
+                          <Droplets className="size-4 text-emerald-600" />
+                          去浇灌
+                        </DialogTitle>
+                        <DialogDescription className="leading-relaxed">
+                          青藤集市不代收货款。请与卖家约好时间，线下见面确认物品无误后，直接扫码支付给卖家。
+                        </DialogDescription>
+                      </DialogHeader>
+                      <Image
+                        src={poolQr}
+                        alt="卖家收款码"
+                        className="w-full max-h-96 object-contain rounded-xl border border-border/60 bg-white"
+                      />
+                    </>
+                  ) : (
+                    <>
+                      <DialogHeader>
+                        <DialogTitle className="flex items-center gap-1.5">
+                          <Droplets className="size-4 text-emerald-600" />
+                          等待浇灌中
+                        </DialogTitle>
+                        <DialogDescription className="leading-relaxed">
+                          卖家还没有在汇水池准备好收款方式。
+                          建议您与卖家约好时间地点，见面确认物品后，直接当面扫码支付给卖家，让这份闲置继续生长。
+                        </DialogDescription>
+                      </DialogHeader>
+                      <Button
+                        className="w-full bg-emerald-600 hover:bg-emerald-700 text-white"
+                        onClick={() => setPoolQrOpen(false)}
+                      >
+                        知道了，去私信约时间
+                      </Button>
+                    </>
+                  )}
+                </DialogContent>
+              </Dialog>
+
+              {/* 安全提示已移除：会话建立时的系统消息 + 「去浇灌」弹窗仍保留防诈骗提醒 */}
 
               {/* 消息列表 */}
               <div

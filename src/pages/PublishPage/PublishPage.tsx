@@ -5,7 +5,6 @@ import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import {
   ArrowLeft,
-  ImagePlus,
   MapPin,
   X,
   CheckCircle,
@@ -82,7 +81,6 @@ export default function PublishPage() {
   const [uploadProgress, setUploadProgress] = useState('');
   const [successOpen, setSuccessOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const cameraInputRef = useRef<HTMLInputElement>(null);
 
   const form = useForm<PublishFormData>({
     resolver: zodResolver(publishSchema),
@@ -225,32 +223,17 @@ export default function PublishPage() {
                     </div>
                   ))}
                   {images.length < MAX_IMAGES && (
-                    <div className="aspect-square rounded-lg border-2 border-dashed border-border/60 bg-muted/30 flex flex-col items-center justify-center gap-1 text-muted-foreground hover:border-primary/40 hover:bg-primary/5 transition-colors">
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="aspect-square rounded-lg border-2 border-dashed border-border/60 bg-muted/30 flex flex-col items-center justify-center gap-1 text-muted-foreground hover:border-primary/40 hover:bg-primary/5 transition-colors cursor-pointer"
+                    >
                       <Images className="size-5 mb-0.5" />
-                      <span className="text-[11px] mb-1">添加图片</span>
-                      <div className="flex gap-1">
-                        <button
-                          type="button"
-                          onClick={() => cameraInputRef.current?.click()}
-                          className="size-7 rounded-full bg-primary/10 text-primary flex items-center justify-center hover:bg-primary/20 transition-colors"
-                          aria-label="拍照"
-                          title="拍照"
-                        >
-                          <Camera className="size-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => fileInputRef.current?.click()}
-                          className="size-7 rounded-full bg-primary/10 text-primary flex items-center justify-center hover:bg-primary/20 transition-colors"
-                          aria-label="从相册选择"
-                          title="相册"
-                        >
-                          <ImagePlus className="size-3.5" />
-                        </button>
-                      </div>
-                    </div>
+                      <span className="text-[11px]">添加图片</span>
+                    </button>
                   )}
                 </div>
+                {/* 整框点击触发；手机端浏览器会原生弹出「拍照 / 相册」两种模式 */}
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -259,17 +242,9 @@ export default function PublishPage() {
                   className="hidden"
                   onChange={(e) => handleFiles(e.target.files)}
                 />
-                <input
-                  ref={cameraInputRef}
-                  type="file"
-                  accept="image/*"
-                  capture="environment"
-                  className="hidden"
-                  onChange={(e) => handleFiles(e.target.files)}
-                />
                 <p className="text-xs text-muted-foreground mt-2 flex items-center gap-1.5">
                   <Camera className="size-3" />
-                  支持相机拍照与相册多选，图片将自动压缩保存
+                  点击上方方框，可拍照或从相册多选，图片将自动压缩保存
                 </p>
               </div>
 

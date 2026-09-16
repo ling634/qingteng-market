@@ -475,6 +475,8 @@ export interface IMyProfile {
   reputationTags: string[];
   studentId: string;
   email: string;
+  /** 汇水池收款码图片 URL（未上传为 null） */
+  payQrUrl: string | null;
 }
 
 export async function fetchMyProfile(userId: string): Promise<IMyProfile | null> {
@@ -502,7 +504,32 @@ export async function fetchMyProfile(userId: string): Promise<IMyProfile | null>
     reputationTags: p.reputation_tags ?? [],
     studentId: priv?.student_id ?? '',
     email: priv?.email ?? '',
+    payQrUrl: p.pay_qr_url ?? null,
   };
+}
+
+// ---------------------------------------------------------------
+// 汇水池：卖家收款码（每人限一张，更换需先删除旧图）
+// ---------------------------------------------------------------
+
+/** 上传/更新收款码 URL（本人） */
+export async function setPayQr(userId: string, url: string | null): Promise<void> {
+  const { error } = await supabase
+    .from('profiles')
+    .update({ pay_qr_url: url })
+    .eq('id', userId);
+  if (error) throw error;
+}
+
+/** 买家在私聊里查看卖家收款码（未上传返回 null） */
+export async function fetchPayQr(userId: string): Promise<string | null> {
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('pay_qr_url')
+    .eq('id', userId)
+    .maybeSingle();
+  if (error) throw error;
+  return data?.pay_qr_url ?? null;
 }
 
 export async function updateNickname(
@@ -792,6 +819,18 @@ export async function markAllFeedbacksRead(): Promise<void> {
     .from('feedbacks')
     .update({ read_at: new Date().toISOString() })
     .is('read_at', null);
+  if (error) throw error;
+}
+
+/** 管理员：删除一条意见反馈工单（物理删除，仅管理员，见 patch_05） */
+export async function deleteFeedbackAdmin(id: string): Promise<void> {
+  const { error } = await supabase.from('feedbacks').delete().eq('id', id);
+  if (error) throw error;
+}
+
+/** 管理员：删除一条举报记录（物理删除，仅管理员，见 patch_05） */
+export async function deleteReportAdmin(id: string): Promise<void> {
+  const { error } = await supabase.from('reports').delete().eq('id', id);
   if (error) throw error;
 }
 
@@ -1106,6 +1145,7 @@ export async function fetchMyPurchases(userId: string): Promise<IPurchase[]> {
     .from('trades')
     .select('*, seller:profiles!trades_seller_id_fkey(nickname, avatar_url)')
     .eq('buyer_id', userId)
+    .eq('buyer_hidden', false)
     .order('created_at', { ascending: false })
     .limit(100);
   if (error) throw error;
@@ -1186,6 +1226,12 @@ export async function cancelReservation(productId: string): Promise<void> {
 /** 买家确认收货：交易完成，商品标记已售出 */
 export async function confirmReceipt(tradeId: string): Promise<void> {
   const { error } = await supabase.rpc('confirm_receipt', { p_trade_id: tradeId });
+  if (error) throw new Error(error.message);
+}
+
+/** 买家删除订单：买家侧隐藏，不影响卖家信誉评价（仅已完结订单） */
+export async function hideTrade(tradeId: string): Promise<void> {
+  const { error } = await supabase.rpc('hide_trade', { p_trade_id: tradeId });
   if (error) throw new Error(error.message);
 }
 

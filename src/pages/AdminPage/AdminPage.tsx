@@ -21,6 +21,7 @@ import {
   Loader2,
   ExternalLink,
   CheckCheck,
+  Trash2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -83,6 +84,8 @@ import {
   sendMessage,
   markAllFeedbacksRead,
   markAllReportsRead,
+  deleteFeedbackAdmin,
+  deleteReportAdmin,
   type IFeedback,
   type IReport,
 } from '@/lib/api';
@@ -175,6 +178,24 @@ export default function AdminPage() {
     }
   };
 
+  // 管理员：删除反馈工单（物理删除，不可恢复）
+  const [deleteFeedbackTarget, setDeleteFeedbackTarget] = useState<IFeedback | null>(null);
+  const [deletingFeedback, setDeletingFeedback] = useState(false);
+  const handleDeleteFeedback = async () => {
+    if (!deleteFeedbackTarget || deletingFeedback) return;
+    setDeletingFeedback(true);
+    try {
+      await deleteFeedbackAdmin(deleteFeedbackTarget.id);
+      toast.success('反馈工单已删除');
+      setDeleteFeedbackTarget(null);
+      void reloadFeedbacks();
+    } catch {
+      toast.error('删除失败，请稍后重试');
+    } finally {
+      setDeletingFeedback(false);
+    }
+  };
+
   const filteredFeedbacks = feedbacks.filter((f) => {
     if (feedbackFilter === 'pending') return f.status === 'pending';
     if (feedbackFilter === 'replied') return f.status === 'replied';
@@ -261,7 +282,7 @@ export default function AdminPage() {
     { key: 'products', label: '商品管理', icon: Package },
     { key: 'ads', label: '广告位管理', icon: Megaphone },
     { key: 'users', label: '用户管理', icon: Users },
-    { key: 'feedback', label: '意见反馈', icon: MessageSquareText, badge: stats.pendingFeedbacks },
+    { key: 'feedback', label: '意见反馈', icon: MessageSquareText, badge: stats.unreadFeedbacks },
     { key: 'reports', label: '举报记录', icon: Shield, badge: stats.unreadReports },
   ];
 
@@ -1028,6 +1049,15 @@ export default function AdminPage() {
                               >
                                 {f.status === 'pending' ? '待回复' : '已回复'}
                               </Badge>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="size-7 text-muted-foreground hover:text-destructive"
+                                title="删除该工单"
+                                onClick={() => setDeleteFeedbackTarget(f)}
+                              >
+                                <Trash2 className="size-3.5" />
+                              </Button>
                             </div>
                           </div>
 
@@ -1111,6 +1141,37 @@ export default function AdminPage() {
           )}
         </div>
       </div>
+
+      {/* 删除反馈工单确认 */}
+      <Dialog
+        open={!!deleteFeedbackTarget}
+        onOpenChange={(o) => !o && setDeleteFeedbackTarget(null)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>删除反馈工单</DialogTitle>
+            <DialogDescription>
+              确定删除「{deleteFeedbackTarget?.userNickname}」的这条反馈工单吗？
+              删除后不可恢复，用户的「意见反馈」里也会同步消失。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="secondary"
+              onClick={() => setDeleteFeedbackTarget(null)}
+            >
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={deletingFeedback}
+              onClick={() => void handleDeleteFeedback()}
+            >
+              {deletingFeedback ? '删除中...' : '确认删除'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -1124,8 +1185,26 @@ function ReportsPanel({
 }) {
   const { auth } = useApp();
   const [confirmReport, setConfirmReport] = useState<IReport | null>(null);
+  const [deleteReportTarget, setDeleteReportTarget] = useState<IReport | null>(null);
+  const [deletingReport, setDeletingReport] = useState(false);
   const [acting, setActing] = useState(false);
   const unreadCount = reports.filter((r) => !r.readAt).length;
+
+  // 管理员：删除举报记录（物理删除，不可恢复）
+  const handleDeleteReport = async () => {
+    if (!deleteReportTarget || deletingReport) return;
+    setDeletingReport(true);
+    try {
+      await deleteReportAdmin(deleteReportTarget.id);
+      toast.success('举报记录已删除');
+      setDeleteReportTarget(null);
+      onChanged();
+    } catch {
+      toast.error('删除失败，请稍后重试');
+    } finally {
+      setDeletingReport(false);
+    }
+  };
 
   const toggleStatus = async (r: IReport) => {
     const next = r.status === 'open' ? 'resolved' : 'open';
@@ -1287,6 +1366,15 @@ function ReportsPanel({
                               >
                                 {r.status === 'open' ? '标记已处理' : '重新打开'}
                               </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="size-8 text-muted-foreground hover:text-destructive"
+                                title="删除该记录"
+                                onClick={() => setDeleteReportTarget(r)}
+                              >
+                                <Trash2 className="size-4" />
+                              </Button>
                             </div>
                           </TableCell>
                         </TableRow>
@@ -1317,6 +1405,37 @@ function ReportsPanel({
                       onClick={() => void handleOfflineAndNotify()}
                     >
                       {acting ? '处理中...' : '确认下架并通知'}
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+
+              {/* 删除举报记录确认 */}
+              <Dialog
+                open={!!deleteReportTarget}
+                onOpenChange={(o) => !o && setDeleteReportTarget(null)}
+              >
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>删除举报记录</DialogTitle>
+                    <DialogDescription>
+                      确定删除这条举报记录（{deleteReportTarget?.reason}）吗？
+                      删除后不可恢复，但不影响被举报商品/用户的当前状态。
+                    </DialogDescription>
+                  </DialogHeader>
+                  <DialogFooter>
+                    <Button
+                      variant="secondary"
+                      onClick={() => setDeleteReportTarget(null)}
+                    >
+                      取消
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      disabled={deletingReport}
+                      onClick={() => void handleDeleteReport()}
+                    >
+                      {deletingReport ? '删除中...' : '确认删除'}
                     </Button>
                   </DialogFooter>
                 </DialogContent>

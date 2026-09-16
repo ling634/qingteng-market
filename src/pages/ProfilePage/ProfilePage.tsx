@@ -14,7 +14,7 @@ import {
   LogOut,
   Shield,
   Award,
-  Camera,
+  Droplets,
   Edit3,
   MessageSquareText,
   LayoutDashboard,
@@ -72,6 +72,8 @@ import {
   getOrCreateConversation,
   confirmReceipt,
   sendSystemMessage,
+  hideTrade,
+  setPayQr,
   submitFeedback,
   appendFeedbackMessage,
   deleteProduct,
@@ -207,6 +209,11 @@ export default function ProfilePage() {
   const [receiptTarget, setReceiptTarget] = useState<IPurchase | null>(null);
   const [receiptBusy, setReceiptBusy] = useState(false);
   const [rateTarget, setRateTarget] = useState<IPurchase | null>(null);
+  const [deleteOrderTarget, setDeleteOrderTarget] = useState<IPurchase | null>(null);
+  const [deleteOrderBusy, setDeleteOrderBusy] = useState(false);
+  const [payQrUrl, setPayQrUrl] = useState<string | null>(null);
+  const [poolOpen, setPoolOpen] = useState(false);
+  const [poolBusy, setPoolBusy] = useState(false);
   const [myRating, setMyRating] = useState(5.0);
   const [myTags, setMyTags] = useState<string[]>([]);
   const [nicknameInput, setNicknameInput] = useState('');
@@ -248,6 +255,7 @@ export default function ProfilePage() {
     if (profile) {
       setMyRating(profile.rating);
       setMyTags(profile.reputationTags);
+      setPayQrUrl(profile.payQrUrl);
     }
   }, [auth.isLoggedIn, auth.userId]);
 
@@ -261,10 +269,59 @@ export default function ProfilePage() {
       setMyFeedbacks([]);
       setPurchases([]);
       setReviews([]);
+      setPayQrUrl(null);
       setMyRating(5.0);
       setMyTags([]);
     }
   }, [auth.isLoggedIn, loadMyData]);
+
+  // 「我买到的」删除订单：买家侧隐藏，不影响卖家信誉评价
+  const handleDeleteOrder = async () => {
+    if (!deleteOrderTarget || deleteOrderBusy) return;
+    setDeleteOrderBusy(true);
+    try {
+      await hideTrade(deleteOrderTarget.id);
+      setPurchases((prev) => prev.filter((p) => p.id !== deleteOrderTarget.id));
+      setDeleteOrderTarget(null);
+      toast.success('订单已删除');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '删除失败，请稍后重试');
+    } finally {
+      setDeleteOrderBusy(false);
+    }
+  };
+
+  // 汇水池：上传收款码（限一张，更换需先删除旧图）
+  const handlePoolFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file || poolBusy) return;
+    setPoolBusy(true);
+    try {
+      const url = await uploadMiscImage(auth.userId, file, 'payqr');
+      await setPayQr(auth.userId, url);
+      setPayQrUrl(url);
+      toast.success('收款码已放入汇水池');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '上传失败，请稍后重试');
+    } finally {
+      setPoolBusy(false);
+    }
+  };
+
+  const handlePoolDelete = async () => {
+    if (poolBusy) return;
+    setPoolBusy(true);
+    try {
+      await setPayQr(auth.userId, null);
+      setPayQrUrl(null);
+      toast.success('已删除收款码，可以重新上传');
+    } catch {
+      toast.error('删除失败，请稍后重试');
+    } finally {
+      setPoolBusy(false);
+    }
+  };
 
   // 买家在「我买到的」里确认收货：交易完成 + 私信里通知卖家
   const handleConfirmReceipt = async () => {
@@ -446,19 +503,17 @@ export default function ProfilePage() {
           <div className="relative flex items-start gap-4">
             <div className="relative shrink-0">
               {auth.isLoggedIn ? (
-                <label className="relative block cursor-pointer group" title="点击更换头像">
+                <label className="relative block cursor-pointer" title="点击更换头像">
                   <Image
                     src={auth.avatar}
                     alt=""
                     className="size-16 md:size-20 rounded-full object-cover border-4 border-white shadow-md"
                   />
-                  <span className="absolute inset-0 rounded-full bg-black/40 text-white flex items-center justify-center opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
-                    {avatarUploading ? (
+                  {avatarUploading && (
+                    <span className="absolute inset-0 rounded-full bg-black/40 text-white flex items-center justify-center">
                       <Loader2 className="size-5 animate-spin" />
-                    ) : (
-                      <Camera className="size-5" />
-                    )}
-                  </span>
+                    </span>
+                  )}
                   <input
                     type="file"
                     accept="image/*"
@@ -508,6 +563,14 @@ export default function ProfilePage() {
                         已封禁
                       </Badge>
                     )}
+                    {/* 汇水池：收款码管理入口（昵称行右侧） */}
+                    <button
+                      onClick={() => setPoolOpen(true)}
+                      className="ml-1 inline-flex items-center gap-1 rounded-full border border-emerald-500/50 bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-500/20 transition-colors"
+                    >
+                      <Droplets className="size-3.5" />
+                      汇水池
+                    </button>
                   </div>
                   <p className="text-sm text-muted-foreground mt-1">
                     学号 {auth.studentId}
@@ -765,47 +828,57 @@ export default function ProfilePage() {
                           </span>
                         </div>
                       </div>
-                      {/* 操作区 */}
-                      {p.status !== 'cancelled' && (
-                        <div className="flex items-center justify-end gap-2 px-4 pb-3">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="h-8 rounded-full"
-                            onClick={() => void handleContactSeller(p)}
+                      {/* 操作区：左下删除订单（仅已完结），右下联系卖家/确认收货/去评价 */}
+                      <div className="flex items-center gap-2 px-4 pb-3">
+                        {p.status !== 'reserved' && (
+                          <button
+                            onClick={() => setDeleteOrderTarget(p)}
+                            className="text-xs text-muted-foreground hover:text-destructive transition-colors"
                           >
-                            联系卖家
-                          </Button>
-                          {p.status === 'reserved' && (
+                            删除订单
+                          </button>
+                        )}
+                        {p.status !== 'cancelled' && (
+                          <div className="flex items-center gap-2 ml-auto">
                             <Button
+                              variant="outline"
                               size="sm"
                               className="h-8 rounded-full"
-                              onClick={() => setReceiptTarget(p)}
+                              onClick={() => void handleContactSeller(p)}
                             >
-                              确认收货
+                              联系卖家
                             </Button>
-                          )}
-                          {p.status === 'completed' &&
-                            (p.buyerRating ? (
+                            {p.status === 'reserved' && (
                               <Button
                                 size="sm"
-                                variant="secondary"
                                 className="h-8 rounded-full"
-                                disabled
+                                onClick={() => setReceiptTarget(p)}
                               >
-                                已评价
+                                确认收货
                               </Button>
-                            ) : (
-                              <Button
-                                size="sm"
-                                className="h-8 rounded-full bg-amber-400 hover:bg-amber-500 text-white"
-                                onClick={() => setRateTarget(p)}
-                              >
-                                去评价
-                              </Button>
-                            ))}
-                        </div>
-                      )}
+                            )}
+                            {p.status === 'completed' &&
+                              (p.buyerRating ? (
+                                <Button
+                                  size="sm"
+                                  variant="secondary"
+                                  className="h-8 rounded-full"
+                                  disabled
+                                >
+                                  已评价
+                                </Button>
+                              ) : (
+                                <Button
+                                  size="sm"
+                                  className="h-8 rounded-full bg-amber-400 hover:bg-amber-500 text-white"
+                                  onClick={() => setRateTarget(p)}
+                                >
+                                  去评价
+                                </Button>
+                              ))}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -916,19 +989,17 @@ export default function ProfilePage() {
             {auth.isLoggedIn ? (
               <div className="bg-card border border-border/60 rounded-xl p-5 space-y-4">
                 <div className="flex items-center gap-4">
-                  <label className="relative cursor-pointer group shrink-0" title="点击更换头像">
+                  <label className="relative cursor-pointer shrink-0" title="点击更换头像">
                     <Image
                       src={auth.avatar}
                       alt=""
                       className="size-16 rounded-full object-cover"
                     />
-                    <span className="absolute inset-0 rounded-full bg-black/40 text-white text-[10px] flex items-center justify-center opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
-                      {avatarUploading ? (
+                    {avatarUploading && (
+                      <span className="absolute inset-0 rounded-full bg-black/40 text-white flex items-center justify-center">
                         <Loader2 className="size-4 animate-spin" />
-                      ) : (
-                        '更换'
-                      )}
-                    </span>
+                      </span>
+                    )}
                     <input type="file" accept="image/*" className="hidden" onChange={handleAvatarFile} disabled={avatarUploading} />
                   </label>
                   <div>
@@ -939,7 +1010,6 @@ export default function ProfilePage() {
                         <span className="text-primary ml-1">✓ 已认证</span>
                       )}
                     </p>
-                    <p className="text-xs text-muted-foreground mt-0.5">点击头像可更换并自由裁剪</p>
                   </div>
                 </div>
                 <div>
@@ -1015,6 +1085,91 @@ export default function ProfilePage() {
         onClose={() => setRateTarget(null)}
         onRated={() => void loadMyData()}
       />
+
+      {/* 删除订单确认（买家侧隐藏，不影响卖家信誉） */}
+      <AlertDialog
+        open={!!deleteOrderTarget}
+        onOpenChange={(o) => !o && setDeleteOrderTarget(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>删除该订单？</AlertDialogTitle>
+            <AlertDialogDescription>
+              「{deleteOrderTarget?.productTitle}」将从你的「我买到的」列表中移除，卖家的信誉评价不受影响。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteOrderBusy}>取消</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={deleteOrderBusy}
+              onClick={(e) => {
+                e.preventDefault();
+                void handleDeleteOrder();
+              }}
+            >
+              {deleteOrderBusy ? '删除中...' : '确认删除'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* 汇水池：收款码管理（限一张，更换需先删除旧图） */}
+      <Dialog open={poolOpen} onOpenChange={setPoolOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-1.5">
+              <Droplets className="size-4 text-emerald-600" />
+              汇水池
+            </DialogTitle>
+            <DialogDescription>
+              欢迎来到汇水池！这里是买家向你支付「浇灌金」的地方
+            </DialogDescription>
+          </DialogHeader>
+          {payQrUrl ? (
+            <div className="space-y-3">
+              <Image
+                src={payQrUrl}
+                alt="收款码"
+                className="w-full max-h-80 object-contain rounded-xl border border-border/60 bg-white"
+              />
+              <p className="text-xs text-muted-foreground text-center">
+                只能保留一张收款码，如需更换请先删除当前图片
+              </p>
+              <Button
+                variant="destructive"
+                className="w-full"
+                disabled={poolBusy}
+                onClick={() => void handlePoolDelete()}
+              >
+                {poolBusy ? '处理中...' : '删除当前收款码'}
+              </Button>
+            </div>
+          ) : (
+            <label className="block cursor-pointer">
+              <div className="border-2 border-dashed border-emerald-500/40 rounded-xl py-10 flex flex-col items-center gap-2 text-emerald-700 hover:bg-emerald-500/5 transition-colors">
+                {poolBusy ? (
+                  <Loader2 className="size-6 animate-spin" />
+                ) : (
+                  <Droplets className="size-6" />
+                )}
+                <span className="text-sm font-medium">
+                  {poolBusy ? '上传中...' : '从相册选择收款码图片'}
+                </span>
+                <span className="text-xs text-muted-foreground px-6 text-center">
+                  建议使用微信或支付宝的收款码，买家在私聊里点「去浇灌」即可看到
+                </span>
+              </div>
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => void handlePoolFile(e)}
+                disabled={poolBusy}
+              />
+            </label>
+          )}
+        </DialogContent>
+      </Dialog>
 
       {/* 登录/注册弹窗 */}
       {/* 删除商品确认弹窗 */}
