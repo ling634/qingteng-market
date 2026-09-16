@@ -34,6 +34,7 @@ function mapProduct(row: any): IProduct {
     sellerId: row.seller_id,
     sellerNickname: seller?.nickname ?? '同学',
     sellerAvatar: seller?.avatar_url || DEFAULT_AVATAR,
+    sellerVerified: seller?.verified ?? false,
     status: row.status,
     createdAt: (row.created_at ?? '').slice(0, 10),
     is_top: row.is_top ?? false,
@@ -43,7 +44,7 @@ function mapProduct(row: any): IProduct {
 }
 
 const PRODUCT_SELECT =
-  '*, seller:profiles!products_seller_id_fkey(nickname, avatar_url)';
+  '*, seller:profiles!products_seller_id_fkey(nickname, avatar_url, verified)';
 
 /** 给一批商品挂载「X 人想要」（收藏人数 ∪ 私聊买家数，同一买家只记一次）；视图不可用时静默返回原数组 */
 async function attachWantCounts(products: IProduct[]): Promise<IProduct[]> {
@@ -351,13 +352,13 @@ export async function setProductTop(
 // ---------------------------------------------------------------
 
 export interface WantedPageQuery {
-  tab?: string; // all | open | closed
   category?: string;
   keyword?: string;
   page: number;
   pageSize?: number;
 }
 
+// 公开求购页只展示「求购中」的信息：已预订/已买到/已下架一律隐去（本人可在「我的求购」管理）
 export async function fetchWantedPage(
   q: WantedPageQuery,
 ): Promise<{ items: IWanted[]; total: number; hasMore: boolean }> {
@@ -368,11 +369,9 @@ export async function fetchWantedPage(
   let query = supabase
     .from('wanted')
     .select('*', { count: 'exact' })
+    .eq('status', 'open')
     .order('created_at', { ascending: false });
 
-  if (q.tab === 'open') query = query.eq('status', 'open');
-  // 「已完成」口径：已预订 + 已买到 + 已下架
-  if (q.tab === 'closed') query = query.in('status', ['reserved', 'done', 'closed']);
   if (q.category && q.category !== 'all')
     query = query.eq('category', q.category);
   const kw = q.keyword?.trim();
@@ -948,7 +947,13 @@ export async function fetchConversations(
     unreadMap.set(m.conversation_id, (unreadMap.get(m.conversation_id) ?? 0) + 1);
   });
 
-  return (data ?? []).map((row: any) => {
+  return (data ?? [])
+    .filter((row: any) => {
+      // 微信式删除会话：本人已隐藏的会话不展示（新消息到达时数据库触发器会自动取消隐藏）
+      const isBuyerRow = row.buyer_id === userId;
+      return !(isBuyerRow ? row.buyer_hidden : row.seller_hidden);
+    })
+    .map((row: any) => {
     const buyer = Array.isArray(row.buyer) ? row.buyer[0] : row.buyer;
     const seller = Array.isArray(row.seller) ? row.seller[0] : row.seller;
     const isBuyer = row.buyer_id === userId;
@@ -977,6 +982,13 @@ export async function fetchConversations(
       unreadCount: unreadMap.get(row.id) ?? 0,
     };
   });
+}
+
+/** 隐藏会话（支持批量）：仅自己不可见，对方记录保留；新消息会自动让它重新出现 */
+export async function hideConversations(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  const { error } = await supabase.rpc('hide_conversations', { p_ids: ids });
+  if (error) throw error;
 }
 
 /** 获取或创建会话（商品咨询 productId 非空；求购联系为 null） */

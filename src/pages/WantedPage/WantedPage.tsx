@@ -7,16 +7,14 @@ import {
   Clock,
   Wallet,
   Tag,
-  CheckCircle2,
-  XCircle,
   X,
   Loader2,
+  ChevronRight,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import {
   Dialog,
   DialogContent,
@@ -48,8 +46,9 @@ export default function WantedPage() {
   const { auth } = useApp();
   const [keyword, setKeyword] = useState('');
   const [category, setCategory] = useState('all');
-  const [tab, setTab] = useState('all');
   const [dialogOpen, setDialogOpen] = useState(false);
+  // 点击紧凑行 → 求购详情弹窗（完整描述 + 联系买家）
+  const [detail, setDetail] = useState<IWanted | null>(null);
   const [formCat, setFormCat] = useState('教材数码');
   const [formTitle, setFormTitle] = useState('');
   const [formBudget, setFormBudget] = useState('');
@@ -68,7 +67,6 @@ export default function WantedPage() {
       setLoading(true);
       try {
         const res = await fetchWantedPage({
-          tab,
           category,
           keyword,
           page: pageIndex,
@@ -84,7 +82,7 @@ export default function WantedPage() {
         setInitialLoaded(true);
       }
     },
-    [tab, category, keyword],
+    [category, keyword],
   );
 
   useEffect(() => {
@@ -292,30 +290,6 @@ export default function WantedPage() {
           )}
         </div>
 
-        {/* Tabs + 分类 */}
-        <Tabs value={tab} onValueChange={setTab} className="mb-4">
-          <TabsList className="w-full justify-start bg-transparent p-0 gap-1 overflow-x-auto">
-            <TabsTrigger
-              value="all"
-              className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-xs md:text-sm px-3 py-1.5 rounded-full whitespace-nowrap"
-            >
-              全部求购
-            </TabsTrigger>
-            <TabsTrigger
-              value="open"
-              className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-xs md:text-sm px-3 py-1.5 rounded-full whitespace-nowrap"
-            >
-              求购中
-            </TabsTrigger>
-            <TabsTrigger
-              value="closed"
-              className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-xs md:text-sm px-3 py-1.5 rounded-full whitespace-nowrap"
-            >
-              已完成
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
-
         {/* 分类筛选 */}
         <div className="flex gap-2 mb-5 overflow-x-auto pb-1">
           {CATEGORIES.map((cat) => (
@@ -330,7 +304,7 @@ export default function WantedPage() {
           ))}
         </div>
 
-        {/* 列表 */}
+        {/* 紧凑列表（类似私信行）：标题 + 预算 + 分类 + 时间，点击看完整描述 */}
         <AnimatePresence mode="wait">
           {items.length > 0 ? (
             <motion.div
@@ -338,75 +312,35 @@ export default function WantedPage() {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4"
+              className="bg-card border border-border/60 rounded-xl overflow-hidden divide-y divide-border/40"
             >
-              {items.map((w, i) => (
-                <motion.div
+              {items.map((w) => (
+                <button
                   key={w.id}
-                  initial={{ opacity: 0, y: 12 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.3, delay: i * 0.04 }}
-                  className="bg-card border border-border/60 rounded-xl p-4 hover:border-primary/30 hover:shadow-sm transition-all"
+                  onClick={() => setDetail(w)}
+                  className="w-full flex items-center gap-3 px-3.5 py-2.5 text-left hover:bg-muted/40 transition-colors"
                 >
-                  <div className="flex items-start justify-between gap-3 mb-2">
-                    <h3 className="font-semibold text-foreground leading-snug flex-1">
+                  <div className="flex-1 min-w-0">
+                    <h3 className="font-medium text-sm text-foreground truncate leading-snug">
                       {w.title}
                     </h3>
-                    <Badge
-                      variant={w.status === 'open' ? 'default' : 'secondary'}
-                      className="shrink-0"
-                    >
-                      {w.status === 'open' ? (
-                        <>
-                          <CheckCircle2 className="size-3 mr-1" />
-                          求购中
-                        </>
-                      ) : (
-                        <>
-                          <XCircle className="size-3 mr-1" />
-                          {w.status === 'reserved'
-                            ? '已预订'
-                            : w.status === 'done'
-                              ? '已买到'
-                              : '已下架'}
-                        </>
-                      )}
-                    </Badge>
+                    <div className="flex items-center gap-3 text-xs text-muted-foreground mt-0.5">
+                      <span className="flex items-center gap-1 text-amber-600 font-medium shrink-0">
+                        <Wallet className="size-3" />
+                        {w.budget}
+                      </span>
+                      <span className="flex items-center gap-1 shrink-0">
+                        <Tag className="size-3" />
+                        {w.category}
+                      </span>
+                      <span className="flex items-center gap-1 ml-auto shrink-0">
+                        <Clock className="size-3" />
+                        {w.createdAt}
+                      </span>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-4 text-sm text-muted-foreground mb-3">
-                    <span className="flex items-center gap-1 text-amber-600 font-medium">
-                      <Wallet className="size-4" />
-                      {w.budget}
-                    </span>
-                    <span className="flex items-center gap-1">
-                      <Tag className="size-3.5" />
-                      {w.category}
-                    </span>
-                  </div>
-                  <p className="text-sm text-foreground/70 line-clamp-2 mb-3 min-h-[2.5rem]">
-                    {w.description}
-                  </p>
-                  <div className="flex items-center justify-between pt-3 border-t border-border/40">
-                    <span className="text-xs text-muted-foreground flex items-center gap-1">
-                      <Clock className="size-3" />
-                      {w.createdAt}
-                    </span>
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      className="gap-1 text-xs"
-                      onClick={() => handleContact(w)}
-                      disabled={w.status !== 'open' || contacting === w.id}
-                    >
-                      {contacting === w.id ? (
-                        <Loader2 className="size-3.5 animate-spin" />
-                      ) : (
-                        <MessageSquare className="size-3.5" />
-                      )}
-                      {w.status === 'open' ? '联系买家' : '已结束'}
-                    </Button>
-                  </div>
-                </motion.div>
+                  <ChevronRight className="size-4 text-muted-foreground/60 shrink-0" />
+                </button>
               ))}
             </motion.div>
           ) : initialLoaded && !loading ? (
@@ -443,6 +377,59 @@ export default function WantedPage() {
           </p>
         )}
       </div>
+
+      {/* 求购详情弹窗：完整描述 + 联系买家 */}
+      <Dialog open={!!detail} onOpenChange={(o) => !o && setDetail(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="leading-snug pr-4">{detail?.title}</DialogTitle>
+            <DialogDescription className="flex items-center gap-3 flex-wrap">
+              <span className="flex items-center gap-1 text-amber-600 font-medium">
+                <Wallet className="size-3.5" />
+                {detail?.budget}
+              </span>
+              <span className="flex items-center gap-1">
+                <Tag className="size-3.5" />
+                {detail?.category}
+              </span>
+              <span className="flex items-center gap-1">
+                <Clock className="size-3.5" />
+                {detail?.createdAt}
+              </span>
+            </DialogDescription>
+          </DialogHeader>
+          {detail?.description ? (
+            <p className="text-sm text-foreground/80 whitespace-pre-wrap leading-relaxed max-h-60 overflow-y-auto">
+              {detail.description}
+            </p>
+          ) : (
+            <p className="text-sm text-muted-foreground">买家没有补充更多描述</p>
+          )}
+          <DialogFooter>
+            <Button variant="secondary" onClick={() => setDetail(null)}>
+              关闭
+            </Button>
+            {detail && detail.buyerId !== auth.userId && (
+              <Button
+                className="gap-1.5"
+                disabled={contacting === detail.id}
+                onClick={() => {
+                  const w = detail;
+                  setDetail(null);
+                  void handleContact(w);
+                }}
+              >
+                {contacting === detail.id ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <MessageSquare className="size-4" />
+                )}
+                联系买家
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -6,6 +6,7 @@ import {
   ArrowLeft,
   Droplets,
   Loader2,
+  Trash2,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '@/components/ui/button';
@@ -41,6 +42,7 @@ import {
   fetchPayQr,
   fetchProductById,
   getOrCreateConversation,
+  hideConversations,
   markAllMessagesRead,
   markConversationRead,
   reserveProduct,
@@ -80,6 +82,71 @@ export default function MessagesPage() {
   const [showListMobile, setShowListMobile] = useState(true);
   const [sending, setSending] = useState(false);
   const messageListRef = useRef<HTMLDivElement>(null);
+
+  // ---------- 会话删除（微信式：仅自己隐藏，对方记录保留，新消息自动重新出现） ----------
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [deleteTargets, setDeleteTargets] = useState<string[] | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [swipeId, setSwipeId] = useState<string | null>(null); // 已滑出删除按钮的会话
+  const [dragOffset, setDragOffset] = useState<{ id: string; x: number } | null>(null);
+  const swipeRef = useRef<{ id: string; startX: number; startY: number } | null>(null);
+  const longPressRef = useRef<{ timer: number | null; fired: boolean }>({
+    timer: null,
+    fired: false,
+  });
+
+  const exitSelectMode = () => {
+    setSelectMode(false);
+    setSelectedIds(new Set());
+  };
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  // 长按 500ms 进入多选模式；触发后吞掉随后的 click，避免误开会话
+  const startLongPress = (id: string) => {
+    longPressRef.current.fired = false;
+    longPressRef.current.timer = window.setTimeout(() => {
+      longPressRef.current.fired = true;
+      setSwipeId(null);
+      setSelectMode(true);
+      setSelectedIds(new Set([id]));
+    }, 500);
+  };
+  const cancelLongPress = () => {
+    if (longPressRef.current.timer) {
+      clearTimeout(longPressRef.current.timer);
+      longPressRef.current.timer = null;
+    }
+  };
+
+  const handleHideConversations = async (ids: string[]) => {
+    if (ids.length === 0 || deleteBusy) return;
+    setDeleteBusy(true);
+    try {
+      await hideConversations(ids);
+      setConversations((prev) => prev.filter((c) => !ids.includes(c.id)));
+      if (activeId && ids.includes(activeId)) {
+        setActiveId(null);
+        setShowListMobile(true);
+      }
+      toast.success(ids.length > 1 ? `已删除 ${ids.length} 个会话` : '会话已删除');
+      setDeleteTargets(null);
+      setSwipeId(null);
+      exitSelectMode();
+    } catch {
+      toast.error('删除失败，请稍后重试');
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
 
   const activeIdRef = useRef<string | null>(null);
   activeIdRef.current = activeId;
@@ -266,7 +333,7 @@ export default function MessagesPage() {
 
   const iAmBuyer = !!activeConv && activeConv.buyerId === myId;
 
-  // ---------- 去浇灌：买家查看卖家收款码 ----------
+  // ---------- 去浇灌：查看对方收款码（商品会话买家看卖家；求购会话求购者看出售者，双方入口一致） ----------
   const [poolQrOpen, setPoolQrOpen] = useState(false);
   const [poolQr, setPoolQr] = useState<string | null>(null);
   const [poolQrLoading, setPoolQrLoading] = useState(false);
@@ -276,7 +343,7 @@ export default function MessagesPage() {
     setPoolQrOpen(true);
     setPoolQrLoading(true);
     try {
-      setPoolQr(await fetchPayQr(activeConv.sellerId));
+      setPoolQr(await fetchPayQr(activeConv.otherId));
     } catch {
       setPoolQr(null);
     } finally {
@@ -497,53 +564,163 @@ export default function MessagesPage() {
           </div>
           <div className="flex-1 overflow-y-auto">
             {filteredConvs.length > 0 ? (
-              filteredConvs.map((conv) => (
-                <button
-                  key={conv.id}
-                  onClick={() => {
-                    setActiveId(conv.id);
-                    setShowListMobile(false);
-                  }}
-                  className={cn(
-                    'w-full flex items-center gap-3 p-3 border-b border-border/40 text-left transition-colors',
-                    activeId === conv.id
-                      ? 'bg-primary/10 border-l-2 border-l-primary'
-                      : 'hover:bg-muted/50',
-                  )}
-                >
-                  <div className="relative shrink-0">
-                    <Image
-                      src={conv.otherAvatar}
-                      alt=""
-                      className="size-11 rounded-full object-cover"
-                    />
-                    {conv.unreadCount > 0 && (
-                      <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-destructive text-white text-xs font-medium flex items-center justify-center">
-                        {conv.unreadCount > 99 ? '99+' : conv.unreadCount}
-                      </span>
-                    )}
+              filteredConvs.map((conv) => {
+                const dragging = dragOffset?.id === conv.id ? dragOffset.x : null;
+                const openX = swipeId === conv.id ? -72 : 0;
+                const offsetX = dragging ?? openX;
+                return (
+                  <div key={conv.id} className="relative overflow-hidden">
+                    {/* 滑开后露出的删除按钮 */}
+                    <button
+                      onClick={() => setDeleteTargets([conv.id])}
+                      className="absolute inset-y-0 right-0 w-[72px] bg-destructive text-white text-sm flex items-center justify-center gap-1"
+                      aria-label="删除会话"
+                    >
+                      <Trash2 className="size-4" />
+                      删除
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (longPressRef.current.fired) {
+                          longPressRef.current.fired = false;
+                          return;
+                        }
+                        if (selectMode) {
+                          toggleSelect(conv.id);
+                          return;
+                        }
+                        if (swipeId === conv.id) {
+                          setSwipeId(null);
+                          return;
+                        }
+                        setActiveId(conv.id);
+                        setShowListMobile(false);
+                      }}
+                      onContextMenu={(e) => {
+                        // PC 端：右键删除单条会话
+                        e.preventDefault();
+                        if (!selectMode) setDeleteTargets([conv.id]);
+                      }}
+                      onTouchStart={(e) => {
+                        if (selectMode) return;
+                        const t = e.touches[0];
+                        swipeRef.current = { id: conv.id, startX: t.clientX, startY: t.clientY };
+                        startLongPress(conv.id);
+                      }}
+                      onTouchMove={(e) => {
+                        const s = swipeRef.current;
+                        if (!s || s.id !== conv.id) return;
+                        const t = e.touches[0];
+                        const dx = t.clientX - s.startX;
+                        const dy = t.clientY - s.startY;
+                        if (Math.abs(dx) > 8 || Math.abs(dy) > 8) cancelLongPress();
+                        // 只响应明确的横向左滑
+                        if (Math.abs(dx) > Math.abs(dy) && dx < 0) {
+                          setDragOffset({ id: conv.id, x: Math.max(dx + (swipeId === conv.id ? -72 : 0), -72) });
+                        }
+                      }}
+                      onTouchEnd={() => {
+                        cancelLongPress();
+                        if (dragOffset?.id === conv.id) {
+                          setSwipeId(dragOffset.x <= -40 ? conv.id : null);
+                          setDragOffset(null);
+                        }
+                        swipeRef.current = null;
+                      }}
+                      style={{
+                        transform: offsetX ? `translateX(${offsetX}px)` : undefined,
+                        transition: dragging != null ? 'none' : 'transform 0.2s ease',
+                      }}
+                      className={cn(
+                        'relative w-full flex items-center gap-3 p-3 border-b border-border/40 text-left transition-colors bg-card',
+                        activeId === conv.id && !selectMode
+                          ? 'bg-primary/10 border-l-2 border-l-primary'
+                          : 'hover:bg-muted/50',
+                        selectMode && selectedIds.has(conv.id) && 'bg-primary/10',
+                      )}
+                    >
+                      {selectMode && (
+                        <span
+                          className={cn(
+                            'shrink-0 size-5 rounded-full border-2 flex items-center justify-center transition-colors',
+                            selectedIds.has(conv.id)
+                              ? 'bg-primary border-primary text-white'
+                              : 'border-muted-foreground/40',
+                          )}
+                        >
+                          {selectedIds.has(conv.id) && (
+                            <span className="text-[10px] leading-none">✓</span>
+                          )}
+                        </span>
+                      )}
+                      <div className="relative shrink-0">
+                        <Image
+                          src={conv.otherAvatar}
+                          alt=""
+                          className="size-11 rounded-full object-cover"
+                        />
+                        {conv.unreadCount > 0 && (
+                          <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-destructive text-white text-xs font-medium flex items-center justify-center">
+                            {conv.unreadCount > 99 ? '99+' : conv.unreadCount}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between">
+                          <span className="font-medium text-sm truncate">
+                            {conv.otherNickname}
+                          </span>
+                          <span className="text-[10px] text-muted-foreground shrink-0 ml-2">
+                            {fmtMsgTime(conv.lastMessageAt)}
+                          </span>
+                        </div>
+                        <p className="text-xs text-muted-foreground truncate mt-0.5">
+                          {conv.lastMessage}
+                        </p>
+                      </div>
+                    </button>
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between">
-                      <span className="font-medium text-sm truncate">
-                        {conv.otherNickname}
-                      </span>
-                      <span className="text-[10px] text-muted-foreground shrink-0 ml-2">
-                        {fmtMsgTime(conv.lastMessageAt)}
-                      </span>
-                    </div>
-                    <p className="text-xs text-muted-foreground truncate mt-0.5">
-                      {conv.lastMessage}
-                    </p>
-                  </div>
-                </button>
-              ))
+                );
+              })
             ) : (
               <div className="p-8 text-center text-sm text-muted-foreground">
                 {keyword ? '没有找到会话' : '还没有会话，去商品详情页私信卖家吧'}
               </div>
             )}
           </div>
+
+          {/* 多选模式底栏：全选 / 取消 / 批量删除 */}
+          {selectMode && (
+            <div className="border-t border-border/60 p-3 flex items-center gap-2 bg-card">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-xs"
+                onClick={() =>
+                  setSelectedIds(
+                    selectedIds.size === filteredConvs.length
+                      ? new Set()
+                      : new Set(filteredConvs.map((c) => c.id)),
+                  )
+                }
+              >
+                {selectedIds.size === filteredConvs.length ? '取消全选' : '全选'}
+              </Button>
+              <div className="flex-1" />
+              <Button variant="secondary" size="sm" onClick={exitSelectMode}>
+                取消
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={selectedIds.size === 0}
+                onClick={() => setDeleteTargets(Array.from(selectedIds))}
+              >
+                <Trash2 className="size-3.5 mr-1" />
+                删除（{selectedIds.size}）
+              </Button>
+            </div>
+          )}
         </div>
 
         {/* 聊天窗口 */}
@@ -578,17 +755,15 @@ export default function MessagesPage() {
                     {activeConv.otherVerified ? '✓ 已认证' : '未认证'}
                   </div>
                 </div>
-                {/* 去浇灌：买家查看卖家收款码（卖家侧不显示） */}
-                {iAmBuyer && (
-                  <Button
-                    size="sm"
-                    onClick={() => void handleOpenPoolQr()}
-                    className="h-8 gap-1 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white shrink-0"
-                  >
-                    <Droplets className="size-3.5" />
-                    去浇灌
-                  </Button>
-                )}
+                {/* 去浇灌：查看对方收款码（会话双方都可见；商品会话付款方是买家，求购会话付款方是求购者） */}
+                <Button
+                  size="sm"
+                  onClick={() => void handleOpenPoolQr()}
+                  className="h-8 gap-1 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white shrink-0"
+                >
+                  <Droplets className="size-3.5" />
+                  去浇灌
+                </Button>
               </div>
 
               {/* 关联商品卡片 + 交易操作（预订 / 确认收货 / 评价） */}
@@ -727,7 +902,7 @@ export default function MessagesPage() {
                 onRated={() => void loadTrade()}
               />
 
-              {/* 去浇灌：查看卖家收款码 */}
+              {/* 去浇灌：查看对方收款码 */}
               <Dialog open={poolQrOpen} onOpenChange={setPoolQrOpen}>
                 <DialogContent className="sm:max-w-sm">
                   {poolQrLoading ? (
@@ -759,8 +934,8 @@ export default function MessagesPage() {
                           等待浇灌中
                         </DialogTitle>
                         <DialogDescription className="leading-relaxed">
-                          卖家还没有在汇水池准备好收款方式。
-                          建议您与卖家约好时间地点，见面确认物品后，直接当面扫码支付给卖家，让这份闲置继续生长。
+                          对方还没有在汇水池准备好收款方式。
+                          建议您与对方约好时间地点，见面确认物品后，直接当面扫码支付，让这份闲置继续生长。
                         </DialogDescription>
                       </DialogHeader>
                       <Button
@@ -876,6 +1051,37 @@ export default function MessagesPage() {
           )}
         </div>
       </div>
+
+      {/* 删除会话确认（仅自己不可见，对方记录保留，新消息会自动重新出现） */}
+      <AlertDialog
+        open={!!deleteTargets}
+        onOpenChange={(o) => !o && setDeleteTargets(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {deleteTargets && deleteTargets.length > 1
+                ? `删除 ${deleteTargets.length} 个会话？`
+                : '删除该会话？'}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              会话只会从你的消息列表中移除，对方的聊天记录不受影响；对方发来新消息时会话会重新出现。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteBusy}>取消</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={deleteBusy}
+              onClick={(e) => {
+                e.preventDefault();
+                void handleHideConversations(deleteTargets ?? []);
+              }}
+            >
+              {deleteBusy ? '删除中...' : '确认删除'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -16,6 +16,8 @@ export interface IProduct {
   sellerId: string;
   sellerNickname: string;
   sellerAvatar: string;
+  /** 卖家是否已认证（列表卡片展示「已认证」徽章） */
+  sellerVerified?: boolean;
   status: 'on_sale' | 'reserved' | 'sold' | 'offline';
   createdAt: string;
   is_top: boolean;
