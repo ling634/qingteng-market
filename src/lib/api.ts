@@ -1207,6 +1207,17 @@ export async function fetchProductBuyers(productId: string): Promise<IProductBuy
   });
 }
 
+// 交易自操作抑制：本人在本机发起的交易动作会触发全局 Realtime 卖家通知，
+// 用时间戳标记最近的自操作，通知层据此跳过，避免和自己页面上的成功提示重复
+let lastSelfTradeActionAt = 0;
+function markSelfTradeAction() {
+  lastSelfTradeActionAt = Date.now();
+}
+/** 最近几秒内是否刚在本机执行过交易写操作 */
+export function isRecentSelfTradeAction(ms = 4000): boolean {
+  return Date.now() - lastSelfTradeActionAt < ms;
+}
+
 /** 预订商品（买家自助或卖家指定买家），返回交易 id；商品已被预订/售出时抛错 */
 export async function reserveProduct(productId: string, buyerId: string): Promise<string> {
   const { data, error } = await supabase.rpc('reserve_product', {
@@ -1214,6 +1225,7 @@ export async function reserveProduct(productId: string, buyerId: string): Promis
     p_buyer_id: buyerId,
   });
   if (error) throw new Error(error.message);
+  markSelfTradeAction();
   return data as string;
 }
 
@@ -1221,6 +1233,7 @@ export async function reserveProduct(productId: string, buyerId: string): Promis
 export async function cancelReservation(productId: string): Promise<void> {
   const { error } = await supabase.rpc('cancel_reservation', { p_product_id: productId });
   if (error) throw new Error(error.message);
+  markSelfTradeAction();
 }
 
 /** 买家确认收货：交易完成，商品标记已售出 */

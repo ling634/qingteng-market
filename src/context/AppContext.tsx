@@ -17,6 +17,7 @@ import {
   fetchMyProfile,
   fetchUnreadAdminCount,
   fetchUnreadMessageCount,
+  isRecentSelfTradeAction,
   removeFavorite,
   updateAvatarUrl,
   updateNickname as apiUpdateNickname,
@@ -212,6 +213,38 @@ export function AppProvider({ children }: { children: ReactNode }) {
       void supabase.removeChannel(channel);
     };
   }, [auth.isAdmin, auth.userId]);
+
+  // 卖家交易实时通知：商品被预订（reserved）/ 买家确认收货（sold）时全局弹窗，
+  // 无论卖家停留在哪个页面都能收到；本人在本机的操作（标记预订/取消预订）跳过不提示
+  useEffect(() => {
+    const userId = auth.userId;
+    if (!auth.isLoggedIn || !userId) return;
+    const channel = supabase
+      .channel(`trade-notify-${userId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'products',
+          filter: `seller_id=eq.${userId}`,
+        },
+        (payload) => {
+          const status = (payload.new as { status?: string }).status;
+          const title = (payload.new as { title?: string }).title ?? '商品';
+          if (isRecentSelfTradeAction()) return;
+          if (status === 'reserved') {
+            toast.info(`「${title}」已被预订，请等待买家确认收货`, { duration: 6000 });
+          } else if (status === 'sold') {
+            toast.success(`「${title}」交易完成，买家已确认收货`, { duration: 6000 });
+          }
+        },
+      )
+      .subscribe();
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [auth.isLoggedIn, auth.userId]);
 
   // ---------- 认证 ----------
 
