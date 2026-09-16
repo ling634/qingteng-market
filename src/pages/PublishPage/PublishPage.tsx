@@ -416,7 +416,7 @@ export default function PublishPage() {
                         售价（元） <span className="text-destructive">*</span>
                       </FormLabel>
                       <FormControl>
-                        <Input type="number" placeholder="0" {...field} />
+                        <Input type="number" step="0.1" min="0" placeholder="0" {...field} />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -436,6 +436,8 @@ export default function PublishPage() {
                       <FormControl>
                         <Input
                           type="number"
+                          step="0.1"
+                          min="0"
                           placeholder="选填"
                           {...field}
                           value={field.value ?? ''}

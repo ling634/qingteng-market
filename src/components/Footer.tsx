@@ -11,15 +11,6 @@ export default function Footer() {
   const { auth } = useApp();
   const navigate = useNavigate();
 
-  const handleAdminClick = () => {
-    if (auth.isAdmin) {
-      navigate('/admin');
-    } else {
-      toast.info('该入口仅站点管理员可访问');
-      navigate('/admin');
-    }
-  };
-
   const handleFeedbackClick = (e: React.MouseEvent) => {
     e.preventDefault();
     if (auth.isLoggedIn) {
@@ -41,11 +32,6 @@ export default function Footer() {
               </div>
               <span className="font-bold text-foreground">青藤集市</span>
             </div>
-            <p className="text-sm text-muted-foreground leading-relaxed">
-              校园闲置，再生长一次
-              <br />
-              纯线下自提 · 安全纯净的校园二手平台
-            </p>
           </div>
 
           <div>
@@ -76,6 +62,14 @@ export default function Footer() {
                   className="hover:text-primary transition-colors"
                 >
                   自提须知
+                </NavLink>
+              </li>
+              <li>
+                <NavLink
+                  to={helpLink('disclaimer', '信息交流平台')}
+                  className="hover:text-primary transition-colors"
+                >
+                  免责声明
                 </NavLink>
               </li>
             </ul>
@@ -120,13 +114,14 @@ export default function Footer() {
               关于我们
             </h4>
             <ul className="space-y-1.5 md:space-y-2 text-xs md:text-sm text-muted-foreground">
-              {auth.isAdmin && (
-                <li>
-                  <NavLink to="/admin" className="hover:text-primary transition-colors">
-                    管理后台
-                  </NavLink>
-                </li>
-              )}
+              <li>
+                <NavLink
+                  to={helpLink('about', '关于青藤')}
+                  className="hover:text-primary transition-colors"
+                >
+                  关于青藤
+                </NavLink>
+              </li>
               <li>
                 <NavLink
                   to="#"
@@ -136,14 +131,6 @@ export default function Footer() {
                   <MessageSquareText className="size-3.5" />
                   意见反馈
                 </NavLink>
-              </li>
-              <li>
-                <button
-                  onClick={handleAdminClick}
-                  className="text-muted-foreground hover:text-primary transition-colors text-left"
-                >
-                  管理员入口
-                </button>
               </li>
             </ul>
           </div>

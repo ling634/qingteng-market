@@ -6,5 +6,6 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export function formatPrice(price: number): string {
-  return `¥${price.toFixed(0)}`;
+  // 支持一位小数定价：整数不带 .0，小数如实显示（¥12 / ¥12.5）
+  return `¥${Number(price.toFixed(1))}`;
 }

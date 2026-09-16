@@ -91,8 +91,15 @@ export default function ProductCard({ product }: ProductCardProps) {
             </span>
           )}
           {!!product.wantCount && (
-            <span className="text-[11px] md:text-xs text-muted-foreground ml-auto shrink-0">
+            <span className="text-[11px] md:text-xs text-muted-foreground shrink-0">
               {product.wantCount}人想要
+            </span>
+          )}
+          {/* 已认证：价格行最右侧 */}
+          {product.sellerVerified && (
+            <span className="ml-auto shrink-0 inline-flex items-center gap-0.5 rounded-full bg-primary/10 text-primary text-[10px] font-medium px-1.5 py-px">
+              <CheckCircle2 className="size-2.5" />
+              已认证
             </span>
           )}
         </div>
@@ -101,15 +108,7 @@ export default function ProductCard({ product }: ProductCardProps) {
             <MapPin className="size-3" />
             <span className="truncate max-w-[100px]">{product.pickupLocation}</span>
           </span>
-          <span className="flex items-center gap-1 min-w-0">
-            {product.sellerVerified && (
-              <span className="shrink-0 inline-flex items-center gap-0.5 rounded-full bg-primary/10 text-primary text-[10px] font-medium px-1.5 py-px">
-                <CheckCircle2 className="size-2.5" />
-                已认证
-              </span>
-            )}
-            <span className="truncate">{product.sellerNickname}</span>
-          </span>
+          <span className="truncate">{product.sellerNickname}</span>
         </div>
       </div>
     </div>

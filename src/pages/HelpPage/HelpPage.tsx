@@ -27,6 +27,7 @@ const helpSections = [
   {
     id: 'rules',
     title: '平台规则',
+    intro: '发布与交易需要遵守的基本规则',
     icon: Scale,
     color: 'text-primary',
     bgColor: 'bg-primary/10',
@@ -34,6 +35,7 @@ const helpSections = [
   {
     id: 'guide',
     title: '新手引导',
+    intro: '从注册认证到发布第一件闲置的完整指引',
     icon: BookOpen,
     color: 'text-blue-600',
     bgColor: 'bg-blue-100',
@@ -41,6 +43,7 @@ const helpSections = [
   {
     id: 'safety',
     title: '安全须知',
+    intro: '线下交易防诈骗与自提安全建议',
     icon: Shield,
     color: 'text-amber-600',
     bgColor: 'bg-amber-100',
@@ -48,6 +51,7 @@ const helpSections = [
   {
     id: 'faq',
     title: '常见问题',
+    intro: '大家最常问的几个问题',
     icon: HelpCircle,
     color: 'text-purple-600',
     bgColor: 'bg-purple-100',
@@ -55,16 +59,33 @@ const helpSections = [
   {
     id: 'report',
     title: '举报指引',
+    intro: '遇到违规行为如何举报、平台如何处理',
     icon: AlertTriangle,
     color: 'text-destructive',
     bgColor: 'bg-red-100',
+  },
+  {
+    id: 'disclaimer',
+    title: '免责声明',
+    intro: '平台服务边界与风险提示，使用前请仔细阅读',
+    icon: AlertCircle,
+    color: 'text-slate-600',
+    bgColor: 'bg-slate-100',
+  },
+  {
+    id: 'about',
+    title: '关于青藤',
+    intro: '了解青藤集市的由来与初心',
+    icon: Leaf,
+    color: 'text-emerald-600',
+    bgColor: 'bg-emerald-100',
   },
 ];
 
 const rulesContent = [
   {
     q: '用户准入规则',
-    a: '青藤集市仅限本校在校学生使用。所有用户必须使用邮箱注册并填写本人 11 位学号完成学生身份校验，方可发布商品和参与交易。我们致力于打造纯净、安全的校园二手交易环境。',
+    a: '青藤集市面向佛大在校学生，注册只需设置昵称和密码即可使用全部基础功能。为保障交易可信，建议在「我的」页面申请园丁认证（人工审核学生证/校园卡），通过后昵称旁会显示「已认证」标识。我们致力于打造纯净、安全的校园二手交易环境。',
   },
   {
     q: '商品发布规范',
@@ -72,7 +93,7 @@ const rulesContent = [
   },
   {
     q: '交易规则',
-    a: '本平台仅提供信息撮合服务，所有交易均为线下自提，不涉及线上支付和订单系统。买卖双方应在约定的校内自提地点当面验货、当面交易，请注意个人财物安全。',
+    a: '交易流程：站内私信沟通、约定时间地点 → 线下见面当面验货 → 点击聊天页顶部「去浇灌」查看卖家收款码，当面扫码支付给卖家。青藤集市不代收货款、不提供担保，请勿在见面前提前转账。',
   },
   {
     q: '向阳位置顶规则',
@@ -91,7 +112,7 @@ const rulesContent = [
 const guideContent = [
   {
     q: '如何认证登录？',
-    a: '在「我的」页面点击登录，输入注册时使用的邮箱和密码即可。注册时需填写本人 11 位学号完成学生身份校验，认证通过后即可使用全部功能。',
+    a: '注册只需设置昵称和密码，登录也使用昵称+密码。认证：打开「我的」页面，点击头像下方的「申请成为认证园丁」，选择「学生证封面」或「校园卡」上传照片（请遮挡或裁掉学号与身份证号），管理员人工审核通过后，昵称旁将显示「已认证」标识。平台不会记录你的学号，照片仅用于身份核验，审核后即删除。',
   },
   {
     q: '如何发布商品？',
@@ -172,12 +193,44 @@ const reportContent = [
   },
 ];
 
+const disclaimerContent = [
+  {
+    q: '信息交流平台',
+    a: '青藤集市仅作为校园闲置信息交流平台，不参与任何具体交易，不提供资金托管、担保或代收代付服务。',
+  },
+  {
+    q: '当面交易',
+    a: '所有交易请务必在校园内当面进行。建议在宿舍楼下、食堂等公共区域约见，确认物品无误后再扫码支付。',
+  },
+  {
+    q: '风险提示',
+    a: '平台已尽力审核用户身份（学生证/校园卡），但无法完全杜绝风险。请同学们提高警惕，谨防诈骗。',
+  },
+  {
+    q: '纠纷处理',
+    a: '如遇纠纷，平台不承担任何连带责任，但会协助提供相关记录。',
+  },
+  {
+    q: '信息发布规范',
+    a: '请勿在平台上发布违法违规、虚假或涉及个人隐私的信息。',
+  },
+];
+
+const aboutContent = [
+  {
+    q: '关于青藤',
+    a: '青藤集市是由佛大在校学生独立开发的校园二手平台。我们希望让闲置物品在校园里重新找到主人。平台仅提供信息展示与交流，所有交易均为同学间当面进行。让每一件闲置，再生长一次。',
+  },
+];
+
 const contentMap: Record<string, { q: string; a: string }[]> = {
   rules: rulesContent,
   guide: guideContent,
   safety: safetyContent,
   faq: faqContent,
   report: reportContent,
+  disclaimer: disclaimerContent,
+  about: aboutContent,
 };
 
 export default function HelpPage() {
@@ -204,27 +257,33 @@ export default function HelpPage() {
     itemParam && items.some((it) => it.q === itemParam)
       ? itemParam
       : items[0]?.q;
+  const current = helpSections.find((s) => s.id === activeSection) ?? helpSections[0];
+  const HeroIcon = current.icon;
 
   return (
     <div className="min-h-screen bg-background">
-      {/* Hero */}
+      {/* Hero：随当前板块切换标题、图标与简介 */}
       <section className="w-full bg-gradient-to-b from-primary/10 via-primary/5 to-background py-12 md:py-16">
         <div className="max-w-4xl mx-auto px-4 md:px-6 text-center">
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5 }}
-          >
-            <div className="size-16 md:size-20 mx-auto rounded-full bg-white shadow-md flex items-center justify-center mb-4">
-              <HelpCircle className="size-8 md:size-10 text-primary" />
-            </div>
-            <h1 className="text-2xl md:text-4xl font-bold text-foreground mb-3">
-              帮助与规则
-            </h1>
-            <p className="text-muted-foreground text-sm md:text-base max-w-xl mx-auto">
-              了解青藤集市的使用规则和安全须知，让你的闲置交易更安心
-            </p>
-          </motion.div>
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={activeSection}
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -12 }}
+              transition={{ duration: 0.35 }}
+            >
+              <div className="size-16 md:size-20 mx-auto rounded-full bg-white shadow-md flex items-center justify-center mb-4">
+                <HeroIcon className={`size-8 md:size-10 ${current.color}`} />
+              </div>
+              <h1 className="text-2xl md:text-4xl font-bold text-foreground mb-3">
+                {current.title}
+              </h1>
+              <p className="text-muted-foreground text-sm md:text-base max-w-xl mx-auto">
+                {current.intro}
+              </p>
+            </motion.div>
+          </AnimatePresence>
         </div>
       </section>
 
