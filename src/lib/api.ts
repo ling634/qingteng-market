@@ -793,6 +793,38 @@ export async function submitFeedback(
   return { success: true };
 }
 
+/**
+ * 「联系青藤」提交：复用意见反馈系统。
+ * 若用户已有处理中的工单，则把内容追加到原工单（保持对话连续，
+ * 避免触发「一人一条未结反馈」的唯一约束）；否则新建工单。
+ */
+export async function submitContactMessage(
+  userId: string,
+  content: string,
+  image?: string,
+): Promise<{ success: boolean; message?: string }> {
+  const { data: open, error: qErr } = await supabase
+    .from('feedbacks')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('status', 'pending')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (qErr) return { success: false, message: '提交失败，请稍后重试' };
+  if (open) {
+    const { error } = await supabase.from('feedback_messages').insert({
+      feedback_id: open.id,
+      sender: 'user',
+      content,
+      image: image ?? null,
+    });
+    if (error) return { success: false, message: '提交失败，请稍后重试' };
+    return { success: true };
+  }
+  return submitFeedback(userId, content, image);
+}
+
 export async function appendFeedbackMessage(
   feedbackId: string,
   content: string,
@@ -1078,6 +1110,29 @@ export async function fetchMessages(
   }));
 }
 
+/**
+ * 私信推送触发器（fire-and-forget）：消息入库后通知 Vercel 函数做服务端推送。
+ * 推送判断（token、限流、风控）全部在 /api/notify-message 完成；
+ * 这里只负责「喊一声」，失败静默，绝不影响私信本身。
+ */
+async function notifyNewMessage(messageId: string): Promise<void> {
+  try {
+    const { data } = await supabase.auth.getSession();
+    const accessToken = data.session?.access_token;
+    if (!accessToken) return;
+    await fetch('/api/notify-message', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ messageId }),
+    });
+  } catch {
+    // 推送链路异常不影响发消息
+  }
+}
+
 export async function sendMessage(
   conversationId: string,
   senderId: string,
@@ -1089,6 +1144,8 @@ export async function sendMessage(
     .select()
     .single();
   if (error) throw error;
+  // 私信成功入库 → 触发 PushPlus 推送判断（不等待、不阻塞）
+  void notifyNewMessage(data.id as string);
   return {
     id: data.id,
     conversationId: data.conversation_id,
@@ -1496,4 +1553,35 @@ export async function reviewVerification(
       .eq('id', userId);
     if (pErr) throw pErr;
   }
+}
+
+// ---------------------------------------------------------------
+// 首页公告栏（patch_09）
+// 每次保存新增一行，最新一行为当前公告；内容为空 = 全站隐藏
+// ---------------------------------------------------------------
+
+export interface IAnnouncement {
+  id: number;
+  content: string;
+  createdAt: string;
+}
+
+/** 读取最新一条公告（无公告返回 null） */
+export async function fetchLatestAnnouncement(): Promise<IAnnouncement | null> {
+  const { data, error } = await supabase
+    .from('announcements')
+    .select('id, content, created_at')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return data
+    ? { id: data.id as number, content: data.content as string, createdAt: data.created_at as string }
+    : null;
+}
+
+/** 管理员发布公告（新行即发布；传空字符串 = 隐藏公告） */
+export async function saveAnnouncement(content: string): Promise<void> {
+  const { error } = await supabase.from('announcements').insert({ content });
+  if (error) throw error;
 }

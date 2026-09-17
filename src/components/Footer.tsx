@@ -1,7 +1,31 @@
+import { useRef, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
-import { Leaf, Shield, Heart, Info, MessageSquareText } from 'lucide-react';
+import {
+  Leaf,
+  Shield,
+  Heart,
+  Info,
+  MessageSquareText,
+  Headphones,
+  Plus,
+  Loader2,
+  Send,
+} from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { toast } from 'sonner';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
+import { Textarea } from '@/components/ui/textarea';
+import { Image } from '@/components/ui/image';
+import { submitContactMessage } from '@/lib/api';
+import { uploadMiscImage } from '@/lib/image';
 
 /** 帮助页深链：跳转后自动展开对应分区并定位到具体条目 */
 const helpLink = (section: string, item: string) =>
@@ -11,6 +35,14 @@ export default function Footer() {
   const { auth } = useApp();
   const navigate = useNavigate();
 
+  // 联系青藤弹窗（复用意见反馈系统，管理员在同一后台收件箱回复）
+  const [contactOpen, setContactOpen] = useState(false);
+  const [contactText, setContactText] = useState('');
+  const [contactImage, setContactImage] = useState<string | null>(null);
+  const [contactUploading, setContactUploading] = useState(false);
+  const [contactBusy, setContactBusy] = useState(false);
+  const contactFileRef = useRef<HTMLInputElement>(null);
+
   const handleFeedbackClick = (e: React.MouseEvent) => {
     e.preventDefault();
     if (auth.isLoggedIn) {
@@ -18,6 +50,56 @@ export default function Footer() {
     } else {
       navigate('/profile');
       toast.info('请先登录后提交意见反馈');
+    }
+  };
+
+  const handleContactClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    if (!auth.isLoggedIn) {
+      navigate('/profile');
+      toast.info('请先登录后联系青藤');
+      return;
+    }
+    setContactText('');
+    setContactImage(null);
+    setContactOpen(true);
+  };
+
+  // 上传截图（选填，限一张）
+  const handleContactFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file || contactUploading) return;
+    setContactUploading(true);
+    try {
+      const url = await uploadMiscImage(auth.userId, file, 'contact');
+      setContactImage(url);
+    } catch {
+      toast.error('图片上传失败，请稍后重试');
+    } finally {
+      setContactUploading(false);
+    }
+  };
+
+  const handleContactSubmit = async () => {
+    if (contactBusy || contactUploading) return;
+    const text = contactText.trim();
+    if (!text) {
+      toast.error('请先填写想对青藤说的话');
+      return;
+    }
+    setContactBusy(true);
+    const result = await submitContactMessage(
+      auth.userId,
+      text,
+      contactImage ?? undefined,
+    );
+    setContactBusy(false);
+    if (result.success) {
+      setContactOpen(false);
+      toast.success('已发送，管理员回复后可在「我的-意见反馈」查看');
+    } else {
+      toast.error(result.message ?? '提交失败，请稍后重试');
     }
   };
 
@@ -132,6 +214,16 @@ export default function Footer() {
                   意见反馈
                 </NavLink>
               </li>
+              <li>
+                <NavLink
+                  to="#"
+                  onClick={handleContactClick}
+                  className="hover:text-primary transition-colors flex items-center gap-1"
+                >
+                  <Headphones className="size-3.5" />
+                  联系青藤
+                </NavLink>
+              </li>
             </ul>
           </div>
         </div>
@@ -144,6 +236,88 @@ export default function Footer() {
           </p>
         </div>
       </div>
+
+      {/* 联系青藤：直接给管理员留言（进意见反馈收件箱） */}
+      <Dialog open={contactOpen} onOpenChange={setContactOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-1.5">
+              <Headphones className="size-4 text-primary" />
+              联系青藤
+            </DialogTitle>
+            <DialogDescription>
+              留言会直达管理员，回复可在「我的-意见反馈」查看
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <Textarea
+              value={contactText}
+              onChange={(e) => setContactText(e.target.value)}
+              placeholder="想置顶商品？想举报骗子？直接跟我说…"
+              maxLength={500}
+              rows={4}
+            />
+            {/* 截图上传（选填，限一张） */}
+            <div className="flex items-start gap-3">
+              <input
+                ref={contactFileRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => void handleContactFile(e)}
+              />
+              {contactImage ? (
+                <div className="relative">
+                  <Image
+                    src={contactImage}
+                    alt="截图"
+                    className="size-20 rounded-lg object-cover border border-border/60"
+                  />
+                  <button
+                    onClick={() => setContactImage(null)}
+                    className="absolute -top-1.5 -right-1.5 size-5 rounded-full bg-destructive text-white text-xs flex items-center justify-center"
+                    title="移除截图"
+                  >
+                    ×
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => contactFileRef.current?.click()}
+                  disabled={contactUploading}
+                  className="size-20 rounded-lg border-2 border-dashed border-border/60 flex flex-col items-center justify-center gap-1 text-muted-foreground hover:border-primary/40 hover:text-primary transition-colors"
+                >
+                  {contactUploading ? (
+                    <Loader2 className="size-5 animate-spin" />
+                  ) : (
+                    <Plus className="size-5" />
+                  )}
+                  <span className="text-[10px]">
+                    {contactUploading ? '上传中' : '添加截图'}
+                  </span>
+                </button>
+              )}
+              <p className="flex-1 text-xs text-muted-foreground pt-1">
+                截图选填。请勿上传包含个人隐私的截图
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              onClick={() => void handleContactSubmit()}
+              disabled={contactBusy || contactUploading}
+              className="gap-1.5"
+            >
+              {contactBusy ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Send className="size-4" />
+              )}
+              {contactBusy ? '发送中...' : '发送'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </footer>
   );
 }

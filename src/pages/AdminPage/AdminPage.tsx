@@ -23,9 +23,11 @@ import {
   CheckCheck,
   Trash2,
   BadgeCheck,
+  Bell,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import {
   Table,
   TableBody,
@@ -89,7 +91,10 @@ import {
   deleteReportAdmin,
   fetchPendingVerifications,
   reviewVerification,
+  fetchLatestAnnouncement,
+  saveAnnouncement,
   type IFeedback,
+  type IAnnouncement,
   type IReport,
   type IVerificationAdmin,
 } from '@/lib/api';
@@ -105,6 +110,10 @@ export default function AdminPage() {
   const { auth, authLoading, ads, refreshAds, adminLogin, logout } = useApp();
   const [activeTab, setActiveTab] = useState('overview');
   const [showSidebar, setShowSidebar] = useState(false);
+  // 公告管理
+  const [annCurrent, setAnnCurrent] = useState<IAnnouncement | null>(null);
+  const [annInput, setAnnInput] = useState('');
+  const [annBusy, setAnnBusy] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
@@ -291,6 +300,35 @@ export default function AdminPage() {
     }
   };
 
+  // 公告管理：切到该 tab 时加载当前公告
+  useEffect(() => {
+    if (activeTab !== 'announcement') return;
+    fetchLatestAnnouncement()
+      .then((ann) => {
+        setAnnCurrent(ann);
+        setAnnInput(ann?.content ?? '');
+      })
+      .catch(() => toast.error('公告读取失败'));
+  }, [activeTab]);
+
+  // 发布公告：新行即发布；内容为空 = 隐藏公告栏
+  const handleSaveAnnouncement = async () => {
+    if (annBusy) return;
+    setAnnBusy(true);
+    try {
+      const content = annInput.trim();
+      await saveAnnouncement(content);
+      const latest = await fetchLatestAnnouncement();
+      setAnnCurrent(latest);
+      setAnnInput(latest?.content ?? '');
+      toast.success(content ? '公告已发布，首页即时生效' : '公告已清空，首页公告栏已隐藏');
+    } catch {
+      toast.error('保存失败，请稍后重试');
+    } finally {
+      setAnnBusy(false);
+    }
+  };
+
   const navItems = [
     { key: 'overview', label: '数据概览', icon: LayoutDashboard },
     { key: 'products', label: '商品管理', icon: Package },
@@ -299,6 +337,7 @@ export default function AdminPage() {
     { key: 'feedback', label: '意见反馈', icon: MessageSquareText, badge: stats.unreadFeedbacks },
     { key: 'reports', label: '举报记录', icon: Shield, badge: stats.unreadReports },
     { key: 'verification', label: '认证审核', icon: BadgeCheck, badge: stats.pendingVerifications },
+    { key: 'announcement', label: '公告管理', icon: Bell },
   ];
 
   const renderSidebar = () => (
@@ -1163,6 +1202,62 @@ export default function AdminPage() {
                 void reloadUsers();
               }}
             />
+          )}
+
+          {/* 公告管理：最新一行公告 = 当前公告；保存空内容 = 隐藏 */}
+          {activeTab === 'announcement' && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Bell className="size-4 text-primary" />
+                  首页公告栏
+                </CardTitle>
+                <CardDescription>
+                  公告展示在首页搜索框正下方；保存后即时生效。修改公告会重新向所有用户展示（包括之前点过关闭的用户）。
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="text-sm">
+                  <span className="text-muted-foreground">当前状态：</span>
+                  {annCurrent && annCurrent.content ? (
+                    <Badge className="bg-emerald-500/15 text-emerald-700 border-0">展示中</Badge>
+                  ) : (
+                    <Badge variant="secondary">已隐藏</Badge>
+                  )}
+                  {annCurrent && annCurrent.content && (
+                    <span className="ml-2 text-muted-foreground text-xs">
+                      「{annCurrent.content}」
+                    </span>
+                  )}
+                </div>
+                <Textarea
+                  value={annInput}
+                  onChange={(e) => setAnnInput(e.target.value)}
+                  placeholder="输入公告内容（建议一句话，过长会在公告栏省略显示）；清空后保存 = 隐藏公告栏"
+                  maxLength={100}
+                  rows={3}
+                />
+                <div className="flex items-center gap-2">
+                  <Button
+                    onClick={() => void handleSaveAnnouncement()}
+                    disabled={annBusy}
+                    className="gap-1.5"
+                  >
+                    {annBusy && <Loader2 className="size-4 animate-spin" />}
+                    {annBusy ? '保存中...' : '发布公告'}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    disabled={annBusy}
+                    onClick={() => {
+                      setAnnInput('');
+                    }}
+                  >
+                    清空内容
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
           )}
         </div>
       </div>

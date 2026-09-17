@@ -17,6 +17,7 @@ import { Input } from '@/components/ui/input';
 import { Image } from '@/components/ui/image';
 import ProductCard from '@/components/ProductCard';
 import ForestGoods from '@/components/ForestGoods';
+import AnnouncementBar from '@/components/AnnouncementBar';
 import { CATEGORIES } from '@/data/categories';
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { supabase } from '@/lib/supabase';
@@ -165,6 +166,8 @@ export default function HomePage() {
               </div>
             </div>
           </div>
+          {/* 公告栏：搜索框（Hero）正下方，无公告时不渲染 */}
+          <AnnouncementBar />
         </section>
 
         {/* 分类快速入口 */}
