@@ -1,12 +1,20 @@
 import { useEffect, useState } from 'react';
 import { Megaphone, X } from 'lucide-react';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { fetchLatestAnnouncement, type IAnnouncement } from '@/lib/api';
 
 // ---------------------------------------------------------------
 // 首页细长公告栏（高约 30px）
 // - 数据来自 announcements 表最新一行；内容为空 → 整个组件不渲染
-// - 点「×」后 localStorage 记录 { 公告id, 关闭时间 }：
-//   同一条公告 5 天内不再显示；管理员修改公告（产生新 id）后重新显示
+// - 绝对定位悬浮在 Hero 与分类区之间的既有间距里，不占额外页面高度
+// - 点击公告文本 → 弹窗查看完整内容；点「×」→ localStorage 记录
+//   { 公告id, 关闭时间 }，同一条公告 5 天内不再显示；
+//   管理员修改公告（产生新 id）后重新显示
 // ---------------------------------------------------------------
 
 const DISMISS_KEY = 'qt-announce-dismiss';
@@ -28,6 +36,7 @@ function isDismissed(id: number): boolean {
 export default function AnnouncementBar() {
   const [ann, setAnn] = useState<IAnnouncement | null>(null);
   const [closed, setClosed] = useState(false);
+  const [detailOpen, setDetailOpen] = useState(false);
 
   useEffect(() => {
     fetchLatestAnnouncement()
@@ -56,20 +65,44 @@ export default function AnnouncementBar() {
   };
 
   return (
-    <div className="w-full">
-      <div className="max-w-7xl mx-auto px-4 md:px-6">
-        <div className="h-[30px] mt-3 flex items-center gap-2 rounded-full bg-amber-500/10 border border-amber-500/30 px-3 text-xs text-amber-800">
-          <Megaphone className="size-3.5 shrink-0 text-amber-600" />
-          <span className="flex-1 min-w-0 truncate">{ann.content}</span>
-          <button
-            onClick={handleClose}
-            title="关闭公告"
-            className="shrink-0 size-5 rounded-full flex items-center justify-center text-amber-700/70 hover:text-amber-800 hover:bg-amber-500/15 transition-colors"
-          >
-            <X className="size-3.5" />
-          </button>
+    <>
+      {/* 悬浮条：定位于 Hero 下沿的既有间距内（Hero section 需为 relative 且无 overflow 裁剪） */}
+      <div className="absolute top-full left-0 right-0 z-10 mt-1.5 pointer-events-none">
+        <div className="max-w-7xl mx-auto px-4 md:px-6">
+          <div className="h-[30px] flex items-center gap-2 rounded-full bg-amber-500/10 border border-amber-500/30 backdrop-blur-sm px-3 text-xs text-amber-800 shadow-sm pointer-events-auto">
+            <Megaphone className="size-3.5 shrink-0 text-amber-600" />
+            <button
+              onClick={() => setDetailOpen(true)}
+              className="flex-1 min-w-0 truncate text-left hover:text-amber-900 transition-colors"
+              title="查看完整公告"
+            >
+              {ann.content}
+            </button>
+            <button
+              onClick={handleClose}
+              title="关闭公告"
+              className="shrink-0 size-5 rounded-full flex items-center justify-center text-amber-700/70 hover:text-amber-800 hover:bg-amber-500/15 transition-colors"
+            >
+              <X className="size-3.5" />
+            </button>
+          </div>
         </div>
       </div>
-    </div>
+
+      {/* 完整公告内容 */}
+      <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-1.5">
+              <Megaphone className="size-4 text-amber-600" />
+              平台公告
+            </DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-foreground/85 leading-relaxed whitespace-pre-wrap">
+            {ann.content}
+          </p>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

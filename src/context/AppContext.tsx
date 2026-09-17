@@ -270,7 +270,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (error) return '邮箱或密码不正确';
       const profile = await fetchMyProfile(data.user.id);
       if (!profile?.isAdmin) {
-        await supabase.auth.signOut();
+        // 不再 signOut：后台登录页守卫（!auth.isAdmin）已经足够，
+        // 踢掉会话会让普通用户在前台也被迫重新登录
         return '该账号没有管理员权限';
       }
       return null;

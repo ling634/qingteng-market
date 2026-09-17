@@ -407,10 +407,7 @@ export default function AdminPage() {
            variant="ghost"
            size="sm"
            className="w-full mt-2 text-xs text-muted-foreground justify-start"
-           onClick={() => {
-             void logout();
-             navigate('/');
-           }}
+           onClick={() => navigate('/')}
          >
            <LogOut className="size-3.5 mr-1.5" />
            退出后台

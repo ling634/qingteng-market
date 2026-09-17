@@ -94,8 +94,8 @@ export default function HomePage() {
   return (
     <div className="min-h-screen bg-background">
       <main className="space-y-10 md:space-y-14">
-        {/* Hero */}
-        <section className="w-full relative overflow-hidden">
+        {/* Hero（relative 供公告栏悬浮定位；不能加 overflow-hidden，会裁剪公告栏） */}
+        <section className="w-full relative">
           <div className="max-w-7xl mx-auto px-4 md:px-6 pt-6">
             <div className="relative rounded-3xl overflow-hidden aspect-[6/5] sm:aspect-[16/10] md:aspect-[21/9] shadow-lg">
               <Image

@@ -54,9 +54,12 @@ import {
   cancelReservation,
   sendSystemMessage,
   setProductStatus,
+  fetchReceivedReviews,
   type ISellerInfo,
   type IProductBuyer,
+  type IReceivedReview,
 } from '@/lib/api';
+import StarRating from '@/components/StarRating';
 import type { IProduct } from '@/data/products';
 
 export default function ProductDetailPage() {
@@ -74,6 +77,21 @@ export default function ProductDetailPage() {
   const [reportReason, setReportReason] = useState('');
   const [reportDetail, setReportDetail] = useState('');
   const [reporting, setReporting] = useState(false);
+  // 卖家信誉弹窗：评分 + 收到的历史评价
+  const [sellerOpen, setSellerOpen] = useState(false);
+  const [sellerReviews, setSellerReviews] = useState<IReceivedReview[]>([]);
+  const [sellerReviewsLoading, setSellerReviewsLoading] = useState(false);
+
+  // 打开卖家主页弹窗时惰性加载其收到的评价
+  const handleOpenSeller = () => {
+    if (!product) return;
+    setSellerOpen(true);
+    setSellerReviewsLoading(true);
+    fetchReceivedReviews(product.sellerId)
+      .then(setSellerReviews)
+      .catch(() => setSellerReviews([]))
+      .finally(() => setSellerReviewsLoading(false));
+  };
 
   useEffect(() => {
     if (!id) return;
@@ -441,17 +459,21 @@ export default function ProductDetailPage() {
               </div>
             </div>
 
-            {/* 卖家信息卡 */}
+            {/* 卖家信息卡（点击头像/昵称区域查看卖家信誉与历史评价） */}
             <div className="bg-card border border-border/60 rounded-xl p-4">
-              <div className="flex items-center gap-3 mb-3">
+              <button
+                onClick={handleOpenSeller}
+                className="w-full flex items-center gap-3 mb-3 text-left group"
+                title="查看卖家信誉与评价"
+              >
                 <Image
                   src={product.sellerAvatar}
                   alt=""
-                  className="size-12 rounded-full object-cover"
+                  className="size-12 rounded-full object-cover group-hover:ring-2 group-hover:ring-primary/40 transition-all"
                 />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-1.5">
-                    <span className="font-semibold text-foreground truncate">
+                    <span className="font-semibold text-foreground truncate group-hover:text-primary transition-colors">
                       {product.sellerNickname}
                     </span>
                     {seller?.verified && (
@@ -461,9 +483,10 @@ export default function ProductDetailPage() {
                   <div className="flex items-center gap-1 text-xs text-muted-foreground">
                     <Star className="size-3 text-amber-500 fill-amber-500" />
                     {seller ? seller.rating.toFixed(1) : '5.0'} · {seller?.tradeCount ?? 0} 次交易
+                    <span className="ml-1 text-primary/70">查看评价 ›</span>
                   </div>
                 </div>
-              </div>
+              </button>
               <div className="flex flex-wrap gap-1.5">
                 {seller?.reputationTags?.map((tag) => (
                   <Badge
@@ -740,6 +763,117 @@ export default function ProductDetailPage() {
           )}
         </div>
       )}
+
+      {/* 卖家信誉弹窗：评分 + 信誉标签 + 收到的历史评价 */}
+      <Dialog open={sellerOpen} onOpenChange={setSellerOpen}>
+        <DialogContent className="sm:max-w-md max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>卖家主页</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            {/* 卖家概览 */}
+            <div className="flex items-center gap-3">
+              <Image
+                src={product.sellerAvatar}
+                alt=""
+                className="size-14 rounded-full object-cover"
+              />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="font-semibold text-foreground truncate">
+                    {product.sellerNickname}
+                  </span>
+                  {seller?.verified && (
+                    <Badge className="bg-primary/15 text-primary border-0 text-xs">
+                      已认证
+                    </Badge>
+                  )}
+                </div>
+                <div className="text-xs text-muted-foreground mt-0.5">
+                  {seller?.tradeCount ?? 0} 次交易
+                  {seller && seller.reportCount > 0 && (
+                    <span className="text-destructive">
+                      {' '}· 被举报 {seller.reportCount} 次
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="text-center shrink-0">
+                <div className="text-2xl font-bold text-primary">
+                  {seller ? seller.rating.toFixed(1) : '5.0'}
+                </div>
+                <StarRating value={seller?.rating ?? 5} className="size-3.5" />
+                <div className="text-[10px] text-muted-foreground mt-0.5">
+                  {sellerReviews.length} 次评价
+                </div>
+              </div>
+            </div>
+
+            {/* 信誉标签 */}
+            {seller?.reputationTags && seller.reputationTags.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {seller.reputationTags.map((tag) => (
+                  <Badge
+                    key={tag}
+                    variant="secondary"
+                    className={cn(
+                      'text-xs font-normal',
+                      tag.includes('举报') || tag.includes('被举报')
+                        ? 'bg-destructive/10 text-destructive'
+                        : 'bg-muted text-muted-foreground',
+                    )}
+                  >
+                    {tag}
+                  </Badge>
+                ))}
+              </div>
+            )}
+
+            {/* 历史评价 */}
+            <div>
+              <h4 className="font-semibold text-sm mb-2">收到的评价</h4>
+              {sellerReviewsLoading ? (
+                <div className="flex justify-center py-8">
+                  <Loader2 className="size-5 animate-spin text-muted-foreground" />
+                </div>
+              ) : sellerReviews.length > 0 ? (
+                <div className="space-y-2.5">
+                  {sellerReviews.map((r) => (
+                    <div
+                      key={r.id}
+                      className="bg-muted/40 border border-border/50 rounded-xl p-3"
+                    >
+                      <div className="flex items-center gap-2 mb-1">
+                        <Image
+                          src={r.buyerAvatar}
+                          alt=""
+                          className="size-6 rounded-full object-cover"
+                        />
+                        <span className="font-medium text-xs truncate">
+                          {r.buyerNickname}
+                        </span>
+                        <span className="ml-auto shrink-0">
+                          <StarRating value={r.buyerRating ?? 0} className="size-3" />
+                        </span>
+                      </div>
+                      {r.buyerComment && (
+                        <p className="text-xs text-foreground/80">{r.buyerComment}</p>
+                      )}
+                      <p className="text-[10px] text-muted-foreground mt-1.5">
+                        {r.completedAt || ''} · 关于「{r.productTitle}」
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="bg-muted/40 border border-dashed border-border/60 rounded-xl p-6 text-center text-xs text-muted-foreground">
+                  还没有收到评价
+                </div>
+              )}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* 举报弹窗 */}
       <Dialog open={reportOpen} onOpenChange={setReportOpen}>

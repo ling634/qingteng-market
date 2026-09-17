@@ -7,6 +7,7 @@ import {
   Droplets,
   Loader2,
   Trash2,
+  Flag,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '@/components/ui/button';
@@ -27,9 +28,18 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Textarea } from '@/components/ui/textarea';
 import { useApp } from '@/context/AppContext';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
@@ -50,6 +60,7 @@ import {
   confirmReceipt,
   sendMessage,
   sendSystemMessage,
+  insertReport,
   type IConversationItem,
   type IChatMessage,
   type ITradeRecord,
@@ -82,6 +93,12 @@ export default function MessagesPage() {
   const [showListMobile, setShowListMobile] = useState(true);
   const [sending, setSending] = useState(false);
   const messageListRef = useRef<HTMLDivElement>(null);
+
+  // 一键举报当前聊天对象
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportReason, setReportReason] = useState('');
+  const [reportDetail, setReportDetail] = useState('');
+  const [reporting, setReporting] = useState(false);
 
   // ---------- 会话删除（微信式：仅自己隐藏，对方记录保留，新消息自动重新出现） ----------
   const [selectMode, setSelectMode] = useState(false);
@@ -348,6 +365,34 @@ export default function MessagesPage() {
       setPoolQr(null);
     } finally {
       setPoolQrLoading(false);
+    }
+  };
+
+  // 一键举报当前聊天对象（进管理后台「举报记录」）
+  const handleReportUser = async () => {
+    if (!activeConv || reporting) return;
+    if (!reportReason) {
+      toast.error('请选择举报原因');
+      return;
+    }
+    setReporting(true);
+    try {
+      await insertReport(myId, {
+        targetType: 'user',
+        targetId: activeConv.otherId,
+        reason: reportReason,
+        detail: reportDetail.trim()
+          ? `来自私信举报：${reportDetail.trim()}`
+          : '来自私信举报',
+      });
+      toast.success('举报已提交，管理员会尽快处理');
+      setReportOpen(false);
+      setReportReason('');
+      setReportDetail('');
+    } catch {
+      toast.error('提交失败，请稍后重试');
+    } finally {
+      setReporting(false);
     }
   };
 
@@ -764,6 +809,14 @@ export default function MessagesPage() {
                   <Droplets className="size-3.5" />
                   去浇灌
                 </Button>
+                {/* 一键举报当前聊天对象 */}
+                <button
+                  onClick={() => setReportOpen(true)}
+                  title="举报对方"
+                  className="shrink-0 size-8 rounded-full text-muted-foreground hover:text-destructive hover:bg-destructive/10 flex items-center justify-center transition-colors"
+                >
+                  <Flag className="size-4" />
+                </button>
               </div>
 
               {/* 关联商品卡片 + 交易操作（预订 / 确认收货 / 评价） */}
@@ -946,6 +999,61 @@ export default function MessagesPage() {
                       </Button>
                     </>
                   )}
+                </DialogContent>
+              </Dialog>
+
+              {/* 一键举报当前聊天对象 */}
+              <Dialog open={reportOpen} onOpenChange={setReportOpen}>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>举报「{activeConv.otherNickname}」</DialogTitle>
+                    <DialogDescription>
+                      请选择举报原因，管理员会尽快核实处理
+                    </DialogDescription>
+                  </DialogHeader>
+                  <div className="space-y-4 py-2">
+                    <div>
+                      <label className="text-sm font-medium text-foreground mb-2 block">
+                        举报原因 <span className="text-destructive">*</span>
+                      </label>
+                      <Select value={reportReason} onValueChange={setReportReason}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="请选择举报原因" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="疑似诈骗 / 诱导转账">疑似诈骗 / 诱导转账</SelectItem>
+                          <SelectItem value="诱导添加微信/QQ">诱导添加微信/QQ</SelectItem>
+                          <SelectItem value="骚扰 / 辱骂">骚扰 / 辱骂</SelectItem>
+                          <SelectItem value="发布违禁或色情信息">发布违禁或色情信息</SelectItem>
+                          <SelectItem value="冒充他人 / 虚假信息">冒充他人 / 虚假信息</SelectItem>
+                          <SelectItem value="其他原因">其他原因</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium text-foreground mb-2 block">
+                        补充说明
+                      </label>
+                      <Textarea
+                        value={reportDetail}
+                        onChange={(e) => setReportDetail(e.target.value)}
+                        placeholder="请描述具体情况（可选）"
+                        rows={4}
+                      />
+                    </div>
+                  </div>
+                  <DialogFooter>
+                    <Button variant="secondary" onClick={() => setReportOpen(false)}>
+                      取消
+                    </Button>
+                    <Button
+                      onClick={() => void handleReportUser()}
+                      variant="destructive"
+                      disabled={reporting}
+                    >
+                      {reporting ? '提交中...' : '提交举报'}
+                    </Button>
+                  </DialogFooter>
                 </DialogContent>
               </Dialog>
 
