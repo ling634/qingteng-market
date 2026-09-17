@@ -10,6 +10,7 @@ import {
   X,
   Loader2,
   ChevronRight,
+  ShieldAlert,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '@/components/ui/button';
@@ -38,6 +39,7 @@ import { toast } from 'sonner';
 import type { IWanted } from '@/data/wanted';
 import { supabase } from '@/lib/supabase';
 import { fetchWantedPage, insertWanted, getOrCreateConversation } from '@/lib/api';
+import { findSensitiveWordIn } from '@/lib/sensitive-words';
 
 const PAGE_SIZE = 15;
 
@@ -126,6 +128,9 @@ export default function WantedPage() {
     return () => observer.disconnect();
   }, [hasMore, loading, page, loadPage]);
 
+  // 敏感词即时提示：命中即在弹窗内标红并禁用提交（提交时再兜底校验一次）
+  const sensitiveHit = findSensitiveWordIn(formTitle, formDesc);
+
   const handleSubmit = async () => {
     if (!auth.isLoggedIn) {
       toast.error('请先登录后再发布求购');
@@ -135,6 +140,12 @@ export default function WantedPage() {
     }
     if (!formTitle.trim() || !formBudget.trim()) {
       toast.error('请填写完整信息');
+      return;
+    }
+    // 敏感词兜底拦截（正常情况即时提示已拦住）
+    const hit = findSensitiveWordIn(formTitle, formDesc);
+    if (hit) {
+      toast.error(`内容包含违规词「${hit}」，请修改后再发布`);
       return;
     }
     setSubmitting(true);
@@ -254,12 +265,21 @@ export default function WantedPage() {
                     onChange={(e) => setFormDesc(e.target.value)}
                   />
                 </div>
+                {/* 敏感词即时提示（命中时禁用发布） */}
+                {sensitiveHit && (
+                  <div className="bg-destructive/10 border border-destructive/30 rounded-xl p-3 flex items-start gap-2.5">
+                    <ShieldAlert className="size-4 text-destructive shrink-0 mt-0.5" />
+                    <p className="text-sm text-destructive">
+                      内容包含违规词「{sensitiveHit}」，请修改后再发布
+                    </p>
+                  </div>
+                )}
               </div>
               <DialogFooter>
                 <Button variant="secondary" onClick={() => setDialogOpen(false)}>
                   取消
                 </Button>
-                <Button onClick={handleSubmit} disabled={submitting}>
+                <Button onClick={handleSubmit} disabled={submitting || !!sensitiveHit}>
                   {submitting ? '发布中...' : '立即发布'}
                 </Button>
               </DialogFooter>

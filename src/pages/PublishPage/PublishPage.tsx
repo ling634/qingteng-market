@@ -10,6 +10,7 @@ import {
   CheckCircle,
   Camera,
   Images,
+  ShieldAlert,
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
@@ -44,10 +45,21 @@ import { toast } from 'sonner';
 import { Image } from '@/components/ui/image';
 import { compressImage, makeThumbnail, uploadProductImages } from '@/lib/image';
 import { fetchProductById, insertProduct, updateProduct } from '@/lib/api';
+import { findSensitiveWord } from '@/lib/sensitive-words';
+
+// 敏感词校验（zod refine 作提交兜底；输入时的即时红字提示见表单内 sensitiveHit）
+const noSensitive = (v: string) => !findSensitiveWord(v);
+const sensitiveMsg = (v: string | undefined) => ({
+  message: `包含违规词「${findSensitiveWord(v ?? '')}」，请修改后再发布`,
+});
 
 const publishSchema = z.object({
   category: z.string().min(1, '请选择商品分类'),
-  title: z.string().min(2, '商品名称至少 2 个字符').max(50, '商品名称不超过 50 个字符'),
+  title: z
+    .string()
+    .min(2, '商品名称至少 2 个字符')
+    .max(50, '商品名称不超过 50 个字符')
+    .refine(noSensitive, sensitiveMsg),
   price: z.string().refine((v) => !isNaN(Number(v)) && Number(v) >= 0 && Number(v) <= 99999, {
     message: '请输入有效的价格（0-99999）',
   }),
@@ -59,7 +71,11 @@ const publishSchema = z.object({
     }),
   condition: z.enum(CONDITIONS, { message: '请选择商品成色' }),
   pickupLocation: z.string().min(2, '请填写自提地点'),
-  description: z.string().max(500, '描述不超过 500 字').optional(),
+  description: z
+    .string()
+    .max(500, '描述不超过 500 字')
+    .optional()
+    .refine((v) => v === undefined || noSensitive(v), sensitiveMsg),
 });
 
 type PublishFormData = z.infer<typeof publishSchema>;
@@ -99,6 +115,12 @@ export default function PublishPage() {
       description: '',
     },
   });
+
+  // 敏感词即时提示：监听标题和描述，命中即在提交按钮上方标红并禁用提交
+  const watchTitle = form.watch('title');
+  const watchDesc = form.watch('description');
+  const sensitiveHit =
+    findSensitiveWord(watchTitle ?? '') ?? findSensitiveWord(watchDesc ?? '');
 
   // 编辑模式：加载商品并预填表单（仅本人可编辑）
   useEffect(() => {
@@ -503,7 +525,17 @@ export default function PublishPage() {
                 </div>
               </div>
 
-              <Button type="submit" className="w-full h-12 text-base" disabled={submitting || compressing || editLoading || images.length + existingImages.length === 0}>
+              {/* 敏感词即时提示（输入即标红，命中时禁用提交） */}
+              {sensitiveHit && (
+                <div className="bg-destructive/10 border border-destructive/30 rounded-xl p-3 flex items-start gap-2.5">
+                  <ShieldAlert className="size-4 text-destructive shrink-0 mt-0.5" />
+                  <p className="text-sm text-destructive">
+                    内容包含违规词「{sensitiveHit}」，请修改后再发布
+                  </p>
+                </div>
+              )}
+
+              <Button type="submit" className="w-full h-12 text-base" disabled={submitting || compressing || editLoading || images.length + existingImages.length === 0 || !!sensitiveHit}>
                 {compressing
                   ? '图片处理中...'
                   : submitting
