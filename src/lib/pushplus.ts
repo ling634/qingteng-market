@@ -90,11 +90,13 @@ export function sanitizePushPlusToken(raw: string): string {
  * 绑定成功页 / 「我的」页测试按钮均可调用。
  */
 export async function sendTestPushPlusMessage(token: string): Promise<PushPlusResult> {
+  // PushPlus 会拦截短时间内内容完全相同的重复推送，
+  // 测试消息带上当前时间，保证每次内容唯一，可反复测试
+  const now = new Date().toLocaleString('zh-CN', { hour12: false });
   return sendPushPlusMessage({
     token,
     title: '青藤集市 · 推送测试',
-    content:
-      '这是一条测试消息：你的微信推送已开启，后续有新的站内通知会第一时间送到这里。',
+    content: `这是一条测试消息：你的微信推送已开启，后续有新的站内通知会第一时间送到这里。<br/><small>发送时间：${now}</small>`,
     url: 'https://qingtengmarket.xyz',
   });
 }
