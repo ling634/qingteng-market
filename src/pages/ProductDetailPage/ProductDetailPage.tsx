@@ -396,17 +396,42 @@ export default function ProductDetailPage() {
                 <h1 className="text-xl md:text-2xl font-bold text-foreground leading-snug flex-1">
                   {product.title}
                 </h1>
-                {/* 编辑闲置：本人在售/已下架商品可修改信息（保存后发布时间刷新） */}
+                {/* 编辑闲置 + 晒晒太阳：本人在售/已下架商品可见 */}
                 {isOwner && (product.status === 'on_sale' || product.status === 'offline') && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="shrink-0 gap-1 h-8"
-                    onClick={() => navigate(`/publish?edit=${product.id}`)}
-                  >
-                    <Pencil className="size-3.5" />
-                    编辑闲置
-                  </Button>
+                  <div className="shrink-0 flex flex-col gap-1.5 items-end">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="gap-1 h-8"
+                      onClick={() => navigate(`/publish?edit=${product.id}`)}
+                    >
+                      <Pencil className="size-3.5" />
+                      编辑闲置
+                    </Button>
+                    {/* 晒晒太阳：唤起页脚「联系青藤」弹窗并预填向阳位申请（Footer 监听该事件） */}
+                    {product.is_top ? (
+                      <span className="inline-flex items-center gap-1 text-xs text-amber-600 font-medium px-2 h-8">
+                        <Sun className="size-3.5" />
+                        已在向阳位
+                      </span>
+                    ) : (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="gap-1 h-8 border-amber-400/60 text-amber-600 hover:bg-amber-50 hover:text-amber-700"
+                        onClick={() =>
+                          window.dispatchEvent(
+                            new CustomEvent('qt-open-contact', {
+                              detail: `我想为这个商品申请向阳位，商品名称：${product.title}，期望置顶时间：今天。`,
+                            }),
+                          )
+                        }
+                      >
+                        <Sun className="size-3.5" />
+                        晒晒太阳
+                      </Button>
+                    )}
+                  </div>
                 )}
               </div>
               {!!product.wantCount && (

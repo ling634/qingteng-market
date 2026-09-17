@@ -35,10 +35,11 @@ export default function ProductCard({ product }: ProductCardProps) {
           alt={product.title}
           className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
         />
+        {/* 向阳位：左上角琥珀色三角形角标 + 小太阳（与「已预订」角标同一写法） */}
         {product.is_top && (
-          <div className="absolute top-2 left-2 flex items-center gap-1 bg-gradient-to-r from-amber-500 to-amber-400 text-white text-xs font-semibold px-2 py-1 rounded-full shadow-sm">
-            <Sun className="size-3" />
-            向阳位
+          <div className="absolute top-0 left-0 z-10 pointer-events-none">
+            <div className="w-0 h-0 border-t-[48px] border-r-[48px] border-t-amber-500 border-r-transparent drop-shadow-sm" />
+            <Sun className="absolute top-1.5 left-1.5 size-3.5 text-white" />
           </div>
         )}
         <button

@@ -111,6 +111,7 @@ function mapWanted(row: any): IWanted {
     description: row.description ?? '',
     buyerId: row.buyer_id,
     status: row.status,
+    image: row.image ?? null,
     createdAt: (row.created_at ?? '').slice(0, 10),
   };
 }
@@ -392,7 +393,7 @@ export async function fetchWantedPage(
 
 export async function insertWanted(
   buyerId: string,
-  input: { title: string; category: string; budget: string; description: string },
+  input: { title: string; category: string; budget: string; description: string; image?: string },
 ): Promise<void> {
   const { error } = await supabase.from('wanted').insert({
     buyer_id: buyerId,
@@ -400,6 +401,8 @@ export async function insertWanted(
     category: input.category,
     budget: input.budget,
     description: input.description,
+    // 求购配图（选填）：帮助卖家理解想要什么，详情弹窗内展示
+    image: input.image ?? null,
   });
   if (error) throw error;
 }

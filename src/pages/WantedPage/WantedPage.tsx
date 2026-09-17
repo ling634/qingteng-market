@@ -11,6 +11,7 @@ import {
   Loader2,
   ChevronRight,
   ShieldAlert,
+  ImagePlus,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '@/components/ui/button';
@@ -33,6 +34,9 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
+import ImageCropDialog from '@/components/ImageCropDialog';
+import { Image } from '@/components/ui/image';
+import { uploadMiscImage } from '@/lib/image';
 import { useApp } from '@/context/AppContext';
 import { CATEGORIES } from '@/data/categories';
 import { toast } from 'sonner';
@@ -55,6 +59,10 @@ export default function WantedPage() {
   const [formTitle, setFormTitle] = useState('');
   const [formBudget, setFormBudget] = useState('');
   const [formDesc, setFormDesc] = useState('');
+  // 求购配图（选填一张）：选图→裁剪→立即上传，表单里只存最终 URL
+  const [formImage, setFormImage] = useState<string | null>(null);
+  const [cropSrc, setCropSrc] = useState<string | null>(null);
+  const [imgUploading, setImgUploading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [contacting, setContacting] = useState<string | null>(null);
 
@@ -155,17 +163,43 @@ export default function WantedPage() {
         category: formCat,
         budget: formBudget.trim(),
         description: formDesc.trim(),
+        image: formImage ?? undefined,
       });
       setDialogOpen(false);
       setFormTitle('');
       setFormBudget('');
       setFormDesc('');
+      setFormImage(null);
       toast.success('求购发布成功！');
       void loadPage(0, false);
     } catch {
       toast.error('发布失败，请稍后重试');
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  // 求购配图：选图 → 打开裁剪（4:3）
+  const handleImageFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file || imgUploading) return;
+    setCropSrc(URL.createObjectURL(file));
+  };
+
+  // 裁剪确认 → 立即上传，表单只保留 URL
+  const handleCropConfirm = async (blob: Blob) => {
+    if (cropSrc) URL.revokeObjectURL(cropSrc);
+    setCropSrc(null);
+    setImgUploading(true);
+    try {
+      const file = new File([blob], 'wanted.jpg', { type: 'image/jpeg' });
+      const url = await uploadMiscImage(auth.userId, file, 'wanted');
+      setFormImage(url);
+    } catch {
+      toast.error('图片上传失败，请重试');
+    } finally {
+      setImgUploading(false);
     }
   };
 
@@ -264,6 +298,52 @@ export default function WantedPage() {
                     value={formDesc}
                     onChange={(e) => setFormDesc(e.target.value)}
                   />
+                </div>
+                {/* 求购配图（选填一张，可裁剪）：帮卖家理解你想要什么样的 */}
+                <div>
+                  <label className="text-sm font-medium mb-2 block">
+                    求购图片
+                    <span className="text-xs text-muted-foreground ml-1 font-normal">
+                      选填，可框选裁剪
+                    </span>
+                  </label>
+                  {formImage ? (
+                    <div className="relative w-28">
+                      <Image
+                        src={formImage}
+                        alt="求购图片"
+                        className="w-28 h-28 object-cover rounded-lg border border-border/60"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setFormImage(null)}
+                        className="!absolute -top-1.5 -right-1.5 z-10 h-5 w-5 rounded-full bg-black/60 text-white flex items-center justify-center"
+                        aria-label="移除图片"
+                      >
+                        <X className="size-3" />
+                      </button>
+                    </div>
+                  ) : (
+                    <label className="block w-28 cursor-pointer">
+                      <div className="w-28 h-28 rounded-lg border-2 border-dashed border-border/60 bg-muted/30 flex flex-col items-center justify-center gap-1 text-muted-foreground hover:border-primary/40 hover:bg-primary/5 transition-colors">
+                        {imgUploading ? (
+                          <Loader2 className="size-5 animate-spin" />
+                        ) : (
+                          <ImagePlus className="size-5" />
+                        )}
+                        <span className="text-[11px]">
+                          {imgUploading ? '上传中' : '添加图片'}
+                        </span>
+                      </div>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={handleImageFile}
+                        disabled={imgUploading}
+                      />
+                    </label>
+                  )}
                 </div>
                 {/* 敏感词即时提示（命中时禁用发布） */}
                 {sensitiveHit && (
@@ -425,6 +505,14 @@ export default function WantedPage() {
           ) : (
             <p className="text-sm text-muted-foreground">买家没有补充更多描述</p>
           )}
+          {/* 求购配图：限高展示，不占满屏 */}
+          {detail?.image && (
+            <Image
+              src={detail.image}
+              alt="求购图片"
+              className="max-h-60 w-auto max-w-full object-contain rounded-xl border border-border/60 mx-auto"
+            />
+          )}
           <DialogFooter>
             <Button variant="secondary" onClick={() => setDetail(null)}>
               关闭
@@ -450,6 +538,20 @@ export default function WantedPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* 求购配图裁剪（4:3 裁剪框） */}
+      <ImageCropDialog
+        open={!!cropSrc}
+        imageSrc={cropSrc}
+        aspect={4 / 3}
+        title="裁剪求购图片"
+        description="拖动框选出想展示的区域"
+        onCancel={() => {
+          if (cropSrc) URL.revokeObjectURL(cropSrc);
+          setCropSrc(null);
+        }}
+        onConfirm={(blob) => void handleCropConfirm(blob)}
+      />
     </div>
   );
 }

@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import AvatarCropDialog from '@/components/AvatarCropDialog';
+import ImageCropDialog from '@/components/ImageCropDialog';
 import RateTradeDialog from '@/components/RateTradeDialog';
 import StarRating from '@/components/StarRating';
 import { Button } from '@/components/ui/button';
@@ -314,6 +315,8 @@ export default function ProfilePage() {
   const [payQrUrl, setPayQrUrl] = useState<string | null>(null);
   const [poolOpen, setPoolOpen] = useState(false);
   const [poolBusy, setPoolBusy] = useState(false);
+  // 汇水池：选图后先裁剪（objectURL），确认后再上传
+  const [poolCropSrc, setPoolCropSrc] = useState<string | null>(null);
   const [myRating, setMyRating] = useState(5.0);
   const [myTags, setMyTags] = useState<string[]>([]);
   const [avatarUploading, setAvatarUploading] = useState(false);
@@ -411,13 +414,21 @@ export default function ProfilePage() {
     }
   };
 
-  // 汇水池：上传收款码（限一张，更换需先删除旧图）
-  const handlePoolFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  // 汇水池：选图 → 矩形裁剪 → 上传（限一张，更换需先删除旧图）
+  const handlePoolFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file || poolBusy) return;
+    setPoolCropSrc(URL.createObjectURL(file));
+  };
+
+  // 裁剪确认：上传裁剪后的图片
+  const handlePoolCropConfirm = async (blob: Blob) => {
+    if (poolCropSrc) URL.revokeObjectURL(poolCropSrc);
+    setPoolCropSrc(null);
     setPoolBusy(true);
     try {
+      const file = new File([blob], 'payqr.jpg', { type: 'image/jpeg' });
       const url = await uploadMiscImage(auth.userId, file, 'payqr');
       await setPayQr(auth.userId, url);
       setPayQrUrl(url);
@@ -446,10 +457,10 @@ export default function ProfilePage() {
   // 微信推送：一键复制 PushPlus 公众号名称
   const handleCopyPushAccount = async () => {
     try {
-      await navigator.clipboard.writeText('pushplus推送加');
-      toast.success('已复制「pushplus推送加」，去微信粘贴搜索');
+      await navigator.clipboard.writeText('push+推送加');
+      toast.success('已复制「push+推送加」，去微信粘贴搜索');
     } catch {
-      toast.error('复制失败，请手动输入：pushplus推送加');
+      toast.error('复制失败，请手动输入：push+推送加');
     }
   };
 
@@ -497,7 +508,7 @@ export default function ProfilePage() {
     const result = await sendTestPushPlusMessage(pushToken);
     setPushTestBusy(false);
     if (result.ok) {
-      toast.success('测试消息已发送，请查看微信「pushplus推送加」公众号');
+      toast.success('测试消息已发送，请查看微信「push+推送加」公众号');
     } else {
       toast.error(`发送失败：${result.msg}`);
     }
@@ -1417,7 +1428,7 @@ export default function ProfilePage() {
                   {poolBusy ? '上传中...' : '从相册选择收款码图片'}
                 </span>
                 <span className="text-xs text-muted-foreground px-6 text-center">
-                  建议使用微信或支付宝的收款码，买家在私聊里点「去浇灌」即可看到
+                  选择后可以框选裁剪需要的区域；建议使用微信或支付宝的收款码，买家在私聊里点「去浇灌」即可看到
                 </span>
               </div>
               <input
@@ -1431,6 +1442,20 @@ export default function ProfilePage() {
           )}
         </DialogContent>
       </Dialog>
+
+      {/* 汇水池收款码裁剪：选图后先裁剪再上传（1:1 裁剪框） */}
+      <ImageCropDialog
+        open={!!poolCropSrc}
+        imageSrc={poolCropSrc}
+        aspect={1}
+        title="裁剪收款码"
+        description="拖动框选出收款码区域，去掉多余部分"
+        onCancel={() => {
+          if (poolCropSrc) URL.revokeObjectURL(poolCropSrc);
+          setPoolCropSrc(null);
+        }}
+        onConfirm={(blob) => void handlePoolCropConfirm(blob)}
+      />
 
       {/* 微信消息推送：PushPlus Token 绑定（后续私信/求购匹配通知也走这里绑定的 token） */}
       <Dialog open={pushOpen} onOpenChange={setPushOpen}>
@@ -1461,7 +1486,7 @@ export default function ProfilePage() {
                   1
                 </span>
                 <span>
-                  微信搜索并关注公众号「pushplus推送加」
+                  微信搜索并关注公众号「push+推送加」
                   <button
                     onClick={() => void handleCopyPushAccount()}
                     className="ml-1.5 inline-flex items-center gap-1 rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-xs font-medium text-sky-700 hover:bg-sky-500/20 transition-colors align-middle"

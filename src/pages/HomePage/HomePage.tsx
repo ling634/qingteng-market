@@ -211,7 +211,7 @@ export default function HomePage() {
                   <div>
                     <h2 className="text-lg font-bold text-foreground">向阳位</h2>
                     <p className="text-xs text-muted-foreground">
-                      付费置顶 · 最多展示 3 件优质好物
+                      让你的闲置被更多同学看见
                     </p>
                   </div>
                 </div>
@@ -225,7 +225,8 @@ export default function HomePage() {
                   <ArrowRight className="size-4 ml-1" />
                 </Button>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {/* 与普通售卖卡片同尺寸的小卡片：手机 2 格 / 桌面 3 格，3 件刚好填满一行 */}
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-3 md:gap-4">
                 {topProducts.map((p, i) => (
                   <motion.div
                     key={p.id}

@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import {
   Leaf,
@@ -64,6 +64,23 @@ export default function Footer() {
     setContactImage(null);
     setContactOpen(true);
   };
+
+  // 「晒晒太阳」等入口通过 window 事件唤起联系青藤弹窗并预填内容（detail 为预填文字）
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const prefill = (e as CustomEvent<string>).detail;
+      if (!auth.isLoggedIn) {
+        navigate('/profile');
+        toast.info('请先登录后联系青藤');
+        return;
+      }
+      setContactText(typeof prefill === 'string' ? prefill : '');
+      setContactImage(null);
+      setContactOpen(true);
+    };
+    window.addEventListener('qt-open-contact', handler);
+    return () => window.removeEventListener('qt-open-contact', handler);
+  }, [auth.isLoggedIn, navigate]);
 
   // 上传截图（选填，限一张）
   const handleContactFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
