@@ -22,6 +22,9 @@ import {
   Loader2,
   ChevronDown,
   Trash2,
+  Bell,
+  Copy,
+  Send,
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import AvatarCropDialog from '@/components/AvatarCropDialog';
@@ -83,6 +86,7 @@ import {
   deleteWanted,
   fetchMyLatestVerification,
   submitVerification,
+  updatePushplusToken,
   type IFeedback,
   type IPurchase,
   type IReceivedReview,
@@ -90,6 +94,7 @@ import {
   type VerificationMethod,
 } from '@/lib/api';
 import { uploadMiscImage, uploadVerificationImage } from '@/lib/image';
+import { sendTestPushPlusMessage } from '@/lib/pushplus';
 import type { IProduct } from '@/data/products';
 import type { IWanted } from '@/data/wanted';
 
@@ -327,6 +332,12 @@ export default function ProfilePage() {
   const [verifyOpen, setVerifyOpen] = useState(false);
   const [verifyMethod, setVerifyMethod] = useState<VerificationMethod>('student_card');
   const [verifyBusy, setVerifyBusy] = useState(false);
+  // 微信消息推送（PushPlus Token 绑定）
+  const [pushOpen, setPushOpen] = useState(false);
+  const [pushToken, setPushToken] = useState<string | null>(null);
+  const [pushInput, setPushInput] = useState('');
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushTestBusy, setPushTestBusy] = useState(false);
 
   const loginForm = useForm<LoginFormData>({
     resolver: zodResolver(loginSchema),
@@ -361,6 +372,7 @@ export default function ProfilePage() {
       setMyRating(profile.rating);
       setMyTags(profile.reputationTags);
       setPayQrUrl(profile.payQrUrl);
+      setPushToken(profile.pushplusToken);
     }
   }, [auth.isLoggedIn, auth.userId]);
 
@@ -377,6 +389,7 @@ export default function ProfilePage() {
       setMyWanted([]);
       setVerification(null);
       setPayQrUrl(null);
+      setPushToken(null);
       setMyRating(5.0);
       setMyTags([]);
     }
@@ -427,6 +440,65 @@ export default function ProfilePage() {
       toast.error('删除失败，请稍后重试');
     } finally {
       setPoolBusy(false);
+    }
+  };
+
+  // 微信推送：一键复制 PushPlus 公众号名称
+  const handleCopyPushAccount = async () => {
+    try {
+      await navigator.clipboard.writeText('pushplus推送加');
+      toast.success('已复制「pushplus推送加」，去微信粘贴搜索');
+    } catch {
+      toast.error('复制失败，请手动输入：pushplus推送加');
+    }
+  };
+
+  // 微信推送：保存 Token（去首尾空格；已绑定时输入空内容保存 = 解绑）
+  const handlePushSave = async () => {
+    if (pushBusy) return;
+    const trimmed = pushInput.trim();
+    if (!trimmed) {
+      if (!pushToken) {
+        toast.error('Token 不能为空，请先粘贴你的 PushPlus Token');
+        return;
+      }
+      // 清空解绑
+      setPushBusy(true);
+      try {
+        await updatePushplusToken(auth.userId, null);
+        setPushToken(null);
+        setPushInput('');
+        toast.success('已解绑，微信消息推送已关闭');
+      } catch {
+        toast.error('解绑失败，请稍后重试');
+      } finally {
+        setPushBusy(false);
+      }
+      return;
+    }
+    setPushBusy(true);
+    try {
+      await updatePushplusToken(auth.userId, trimmed);
+      setPushToken(trimmed);
+      setPushInput(trimmed);
+      toast.success('保存成功，微信消息推送已开启');
+    } catch {
+      toast.error('保存失败，请稍后重试');
+    } finally {
+      setPushBusy(false);
+    }
+  };
+
+  // 微信推送：发送测试消息，验证 token 是否有效
+  const handlePushTest = async () => {
+    if (!pushToken || pushTestBusy) return;
+    setPushTestBusy(true);
+    const result = await sendTestPushPlusMessage(pushToken);
+    setPushTestBusy(false);
+    if (result.ok) {
+      toast.success('测试消息已发送，请查看微信「pushplus推送加」公众号');
+    } else {
+      toast.error(`发送失败：${result.msg}`);
     }
   };
 
@@ -769,6 +841,20 @@ export default function ProfilePage() {
                     >
                       <Droplets className="size-3.5" />
                       汇水池
+                    </button>
+                    {/* 微信消息推送：PushPlus Token 绑定入口 */}
+                    <button
+                      onClick={() => {
+                        setPushInput(pushToken ?? '');
+                        setPushOpen(true);
+                      }}
+                      className="ml-1 inline-flex items-center gap-1 rounded-full border border-sky-500/50 bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-sky-700 hover:bg-sky-500/20 transition-colors"
+                    >
+                      <Bell className="size-3.5" />
+                      微信推送
+                      {pushToken && (
+                        <span className="size-1.5 rounded-full bg-emerald-500" title="已绑定" />
+                      )}
                     </button>
                   </div>
                   <div className="flex items-center gap-4 mt-3 flex-wrap">
@@ -1342,6 +1428,102 @@ export default function ProfilePage() {
               />
             </label>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* 微信消息推送：PushPlus Token 绑定（后续私信/求购匹配通知也走这里绑定的 token） */}
+      <Dialog open={pushOpen} onOpenChange={setPushOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-1.5">
+              <Bell className="size-4 text-sky-600" />
+              微信消息推送
+              {pushToken ? (
+                <Badge className="bg-emerald-500/15 text-emerald-700 border-0 text-[10px]">
+                  已绑定
+                </Badge>
+              ) : (
+                <Badge variant="secondary" className="text-[10px]">
+                  未绑定
+                </Badge>
+              )}
+            </DialogTitle>
+            <DialogDescription>
+              绑定后，站内新消息等通知会推送到你的微信
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            {/* 操作指引 */}
+            <ol className="space-y-2 text-sm text-foreground/80">
+              <li className="flex items-start gap-2">
+                <span className="shrink-0 size-5 rounded-full bg-sky-500/15 text-sky-700 text-xs font-bold flex items-center justify-center mt-0.5">
+                  1
+                </span>
+                <span>
+                  微信搜索并关注公众号「pushplus推送加」
+                  <button
+                    onClick={() => void handleCopyPushAccount()}
+                    className="ml-1.5 inline-flex items-center gap-1 rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-xs font-medium text-sky-700 hover:bg-sky-500/20 transition-colors align-middle"
+                  >
+                    <Copy className="size-3" />
+                    一键复制
+                  </button>
+                </span>
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="shrink-0 size-5 rounded-full bg-sky-500/15 text-sky-700 text-xs font-bold flex items-center justify-center mt-0.5">
+                  2
+                </span>
+                <span>关注后公众号会自动发送你的专属 token，复制该 token</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="shrink-0 size-5 rounded-full bg-sky-500/15 text-sky-700 text-xs font-bold flex items-center justify-center mt-0.5">
+                  3
+                </span>
+                <span>回到青藤集市，在下方粘贴并保存</span>
+              </li>
+            </ol>
+            {/* Token 输入 */}
+            <div className="space-y-2">
+              <Input
+                value={pushInput}
+                onChange={(e) => setPushInput(e.target.value)}
+                placeholder="粘贴你的 PushPlus Token"
+                maxLength={64}
+                className="font-mono text-sm"
+              />
+              <p className="text-xs text-muted-foreground">
+                {pushToken
+                  ? '已绑定，清空输入框后保存即可解绑'
+                  : 'Token 仅用于向你推送消息，可随时解绑'}
+              </p>
+            </div>
+          </div>
+          <DialogFooter className="gap-2 sm:gap-2">
+            {pushToken && (
+              <Button
+                variant="outline"
+                disabled={pushTestBusy || pushBusy}
+                onClick={() => void handlePushTest()}
+                className="gap-1.5"
+              >
+                {pushTestBusy ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Send className="size-4" />
+                )}
+                {pushTestBusy ? '发送中...' : '发送测试'}
+              </Button>
+            )}
+            <Button
+              disabled={pushBusy || pushTestBusy}
+              onClick={() => void handlePushSave()}
+              className="gap-1.5"
+            >
+              {pushBusy && <Loader2 className="size-4 animate-spin" />}
+              {pushBusy ? '保存中...' : '保存'}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

@@ -528,6 +528,8 @@ export interface IMyProfile {
   email: string;
   /** 汇水池收款码图片 URL（未上传为 null） */
   payQrUrl: string | null;
+  /** PushPlus 微信推送 Token（未绑定为 null） */
+  pushplusToken: string | null;
 }
 
 export async function fetchMyProfile(userId: string): Promise<IMyProfile | null> {
@@ -535,7 +537,7 @@ export async function fetchMyProfile(userId: string): Promise<IMyProfile | null>
     supabase.from('profiles').select('*').eq('id', userId).maybeSingle(),
     supabase
       .from('profile_private')
-      .select('student_id, email')
+      .select('student_id, email, pushplus_token')
       .eq('user_id', userId)
       .maybeSingle(),
   ]);
@@ -556,7 +558,29 @@ export async function fetchMyProfile(userId: string): Promise<IMyProfile | null>
     studentId: priv?.student_id ?? '',
     email: priv?.email ?? '',
     payQrUrl: p.pay_qr_url ?? null,
+    pushplusToken: priv?.pushplus_token ?? null,
   };
+}
+
+// ---------------------------------------------------------------
+// PushPlus 微信推送：Token 绑定（存 profile_private，仅本人可读写）
+// ---------------------------------------------------------------
+
+/**
+ * 绑定/解绑当前用户的 PushPlus Token。
+ * 传 null 表示解绑（清空 token，关闭微信推送）。
+ * RLS 限定 auth.uid() = user_id，前端传入的必须是当前登录用户 ID，
+ * 无法修改他人的 token。
+ */
+export async function updatePushplusToken(
+  userId: string,
+  token: string | null,
+): Promise<void> {
+  const { error } = await supabase
+    .from('profile_private')
+    .update({ pushplus_token: token })
+    .eq('user_id', userId);
+  if (error) throw error;
 }
 
 // ---------------------------------------------------------------
