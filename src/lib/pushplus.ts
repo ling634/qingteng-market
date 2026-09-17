@@ -54,15 +54,35 @@ export async function sendPushPlusMessage({
     if (!res.ok) {
       return { ok: false, msg: `网络异常（HTTP ${res.status}）` };
     }
-    const data = (await res.json()) as { code?: number; msg?: string };
+    const data = (await res.json()) as {
+      code?: number;
+      msg?: string;
+      data?: unknown;
+    };
     // PushPlus 约定 code=200 为成功，其余为失败（如 token 无效、内容为空等）
     if (data.code === 200) {
       return { ok: true, msg: data.msg ?? '发送成功' };
     }
-    return { ok: false, msg: data.msg ?? `接口返回错误码 ${data.code ?? '未知'}` };
+    // 失败时把返回码和 data 详情一并透出（999「服务端验证错误」需看具体内容才能定位）
+    console.warn('[pushplus] 发送失败，接口完整返回：', data);
+    const detail =
+      typeof data.data === 'string' && data.data ? `（${data.data}）` : '';
+    return {
+      ok: false,
+      msg: `[${data.code ?? '?'}] ${data.msg ?? '未知错误'}${detail}`,
+    };
   } catch (e) {
     return { ok: false, msg: e instanceof Error ? e.message : '网络请求失败' };
   }
+}
+
+/**
+ * 清洗 token：去除所有空白字符及粘贴时可能带入的不可见字符。
+ * 从微信里复制的 token 经常夹带零宽空格（U+200B）、零宽连接符（U+200D）、BOM（U+FEFF）
+ * 或换行，肉眼看不出来，但会导致接口校验失败。
+ */
+export function sanitizePushPlusToken(raw: string): string {
+  return raw.replace(/[\s\u200B\u200C\u200D\uFEFF]/g, '');
 }
 
 /**

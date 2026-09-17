@@ -94,7 +94,7 @@ import {
   type VerificationMethod,
 } from '@/lib/api';
 import { uploadMiscImage, uploadVerificationImage } from '@/lib/image';
-import { sendTestPushPlusMessage } from '@/lib/pushplus';
+import { sendTestPushPlusMessage, sanitizePushPlusToken } from '@/lib/pushplus';
 import type { IProduct } from '@/data/products';
 import type { IWanted } from '@/data/wanted';
 
@@ -453,10 +453,11 @@ export default function ProfilePage() {
     }
   };
 
-  // 微信推送：保存 Token（去首尾空格；已绑定时输入空内容保存 = 解绑）
+  // 微信推送：保存 Token（去空白与不可见字符；已绑定时输入空内容保存 = 解绑）
   const handlePushSave = async () => {
     if (pushBusy) return;
-    const trimmed = pushInput.trim();
+    // 微信里复制的 token 可能夹带零宽字符，肉眼不可见但会导致接口校验失败
+    const trimmed = sanitizePushPlusToken(pushInput);
     if (!trimmed) {
       if (!pushToken) {
         toast.error('Token 不能为空，请先粘贴你的 PushPlus Token');
