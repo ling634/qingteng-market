@@ -5,10 +5,17 @@
 // 查询 WxPusher「扫码用户 UID」接口：
 //   - 用户还没扫码 → { bound: false }（前端继续轮询，间隔 ≥ 10 秒）
 //   - 已扫码 → 校验二维码 extra 与当前用户一致后，写入 profile_private.wxpusher_uid
-//     → { bound: true }
+//     → { bound: true, uid }
+//
+// 注意：api/ 下的函数不做本地文件互相 import（Vercel 打包会崩），
+// 公共代码在各函数内联维护。
 // ---------------------------------------------------------------
 
-import { fetchJson, getAdmin, getCallerId, WXPUSHER_API, type Json } from './_wxpusher';
+import { createClient } from '@supabase/supabase-js';
+
+const WXPUSHER_API = 'https://wxpusher.zjiecode.com';
+
+type Json = Record<string, unknown>;
 
 export default async function handler(
   req: { method?: string; headers: Record<string, string | undefined>; body?: Json },
@@ -20,33 +27,54 @@ export default async function handler(
     respond(405, { ok: false, msg: 'Method Not Allowed' });
     return;
   }
-  const admin = getAdmin();
-  if (!admin) {
+  const { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY } = process.env;
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+    console.error('[wxpusher-bind] 缺少 SUPABASE 环境变量');
     respond(500, { ok: false, msg: '服务端未配置数据库' });
     return;
   }
-  const callerId = await getCallerId(admin, req);
-  if (!callerId) {
+  const accessToken = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+  if (!accessToken) {
     respond(401, { ok: false, msg: '未登录' });
     return;
   }
+  const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  const { data: userData, error: userErr } = await admin.auth.getUser(accessToken);
+  if (userErr || !userData.user) {
+    respond(401, { ok: false, msg: '登录状态无效' });
+    return;
+  }
+  const callerId = userData.user.id;
+
   const code = req.body?.code;
   if (typeof code !== 'string' || !code) {
     respond(400, { ok: false, msg: '缺少 code' });
     return;
   }
 
-  const r = await fetchJson(
-    `${WXPUSHER_API}/api/fun/scan-qrcode-uid?code=${encodeURIComponent(code)}`,
-  );
-  if (!r.json) {
-    console.error(`[wxpusher-bind] 查询扫码状态网络失败：${r.error}`);
+  let json: Json | null = null;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    const resp = await fetch(
+      `${WXPUSHER_API}/api/fun/scan-qrcode-uid?code=${encodeURIComponent(code)}`,
+      { signal: controller.signal },
+    );
+    clearTimeout(timer);
+    json = (await resp.json().catch(() => null)) as Json | null;
+  } catch (e) {
+    console.error(`[wxpusher-bind] 查询扫码状态异常：${e instanceof Error ? e.message : e}`);
+  }
+  if (!json) {
+    // 网络失败按「未扫码」处理，前端继续轮询
     respond(200, { ok: true, bound: false });
     return;
   }
-  const data = r.json.data as Json | undefined;
+  const data = json.data as Json | undefined;
   const uid = data?.uid as string | undefined;
-  if (r.json.code !== 1000 || !uid) {
+  if (json.code !== 1000 || !uid) {
     // 正常情况：用户还没扫码
     respond(200, { ok: true, bound: false });
     return;

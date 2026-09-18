@@ -14,13 +14,51 @@
 //
 // 环境变量（在 Vercel 项目后台配置，严禁出现在前端代码）：
 //   SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY / WXPUSHER_APP_TOKEN
+//
+// 注意：api/ 下的函数不做本地文件互相 import（Vercel 打包会崩），
+// 公共代码在各函数内联维护。
 // ---------------------------------------------------------------
 
-import type { SupabaseClient } from '@supabase/supabase-js';
-import { getAdmin, getCallerId, wxSend, WX_OK, SITE_URL, type Json } from './_wxpusher';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
+const WXPUSHER_API = 'https://wxpusher.zjiecode.com';
+const SITE_URL = 'https://qingtengmarket.xyz';
+const WX_OK = 1000; // WxPusher 业务成功码
+const PUSH_TIMEOUT_MS = 5000;
 const RATE_LIMIT_SECONDS = 10; // 同一接收者的推送间隔
 const GLOBAL_MIN_INTERVAL_MS = 1000; // 全局最小推送间隔（WxPusher QPS≤1）
+
+type Json = Record<string, unknown>;
+
+/** 调用 WxPusher 发送：网络异常/超时最多重试 1 次，拿到业务响应立即返回 */
+async function wxSend(body: Json): Promise<{
+  json: Json | null;
+  httpStatus: number | null;
+  attempts: number;
+  error?: string;
+}> {
+  let lastError = '';
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), PUSH_TIMEOUT_MS);
+      const resp = await fetch(`${WXPUSHER_API}/api/send/message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      const json = (await resp.json().catch(() => null)) as Json | null;
+      // 拿到 HTTP 响应即止：业务错误码绝不重试
+      return { json, httpStatus: resp.status, attempts: attempt };
+    } catch (e) {
+      lastError = e instanceof Error ? e.message : String(e);
+      console.warn(`[notify] 第 ${attempt} 次请求 WxPusher 异常：${lastError}`);
+    }
+  }
+  return { json: null, httpStatus: null, attempts: 2, error: lastError };
+}
 
 /** 写推送日志（失败只告警，不影响主流程） */
 async function writeLog(admin: SupabaseClient, entry: Json): Promise<void> {
@@ -38,25 +76,28 @@ export default async function handler(
     respond(405, { ok: false, msg: 'Method Not Allowed' });
     return;
   }
-  const { WXPUSHER_APP_TOKEN } = process.env;
-  if (!WXPUSHER_APP_TOKEN) {
-    console.error('[notify] 缺少 WXPUSHER_APP_TOKEN 环境变量');
-    respond(500, { ok: false, msg: '服务端未配置推送服务' });
-    return;
-  }
-  const admin = getAdmin();
-  if (!admin) {
-    console.error('[notify] 缺少 SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY 环境变量');
+  const { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, WXPUSHER_APP_TOKEN } = process.env;
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY || !WXPUSHER_APP_TOKEN) {
+    console.error('[notify] 缺少环境变量（SUPABASE / WXPUSHER_APP_TOKEN）');
     respond(500, { ok: false, msg: '服务端未配置环境变量' });
     return;
   }
 
   // 1. 鉴权：必须是登录用户，且只能触发「自己发的消息」的推送
-  const callerId = await getCallerId(admin, req);
-  if (!callerId) {
+  const accessToken = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+  if (!accessToken) {
     respond(401, { ok: false, msg: '未登录' });
     return;
   }
+  const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  const { data: userData, error: userErr } = await admin.auth.getUser(accessToken);
+  if (userErr || !userData.user) {
+    respond(401, { ok: false, msg: '登录状态无效' });
+    return;
+  }
+  const callerId = userData.user.id;
 
   // 2. 读消息：确认真实存在、发送者是调用者本人、非系统消息
   const messageId = req.body?.messageId;
