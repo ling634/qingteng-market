@@ -87,7 +87,7 @@ import {
   deleteWanted,
   fetchMyLatestVerification,
   submitVerification,
-  updatePushplusToken,
+  updateWxpusherUid,
   type IFeedback,
   type IPurchase,
   type IReceivedReview,
@@ -95,7 +95,7 @@ import {
   type VerificationMethod,
 } from '@/lib/api';
 import { uploadMiscImage, uploadVerificationImage } from '@/lib/image';
-import { sendTestPushPlusMessage, sanitizePushPlusToken } from '@/lib/pushplus';
+import { createBindQrCode, pollBindStatus, sendTestWxPush } from '@/lib/wxpusher';
 import type { IProduct } from '@/data/products';
 import type { IWanted } from '@/data/wanted';
 
@@ -337,7 +337,12 @@ export default function ProfilePage() {
   const [verifyBusy, setVerifyBusy] = useState(false);
   // 微信消息推送（PushPlus Token 绑定）
   const [pushOpen, setPushOpen] = useState(false);
-  const [pushToken, setPushToken] = useState<string | null>(null);
+  // WxPusher 绑定状态：已绑定的 UID（null = 未绑定）
+  const [pushUid, setPushUid] = useState<string | null>(null);
+  // 扫码绑定：二维码（10 分钟有效）+ 加载态
+  const [pushQr, setPushQr] = useState<{ code: string; qrUrl: string } | null>(null);
+  const [pushQrLoading, setPushQrLoading] = useState(false);
+  // 手动绑定：UID 输入框与保存态
   const [pushInput, setPushInput] = useState('');
   const [pushBusy, setPushBusy] = useState(false);
   const [pushTestBusy, setPushTestBusy] = useState(false);
@@ -375,7 +380,7 @@ export default function ProfilePage() {
       setMyRating(profile.rating);
       setMyTags(profile.reputationTags);
       setPayQrUrl(profile.payQrUrl);
-      setPushToken(profile.pushplusToken);
+      setPushUid(profile.wxpusherUid);
     }
   }, [auth.isLoggedIn, auth.userId]);
 
@@ -392,7 +397,7 @@ export default function ProfilePage() {
       setMyWanted([]);
       setVerification(null);
       setPayQrUrl(null);
-      setPushToken(null);
+      setPushUid(null);
       setMyRating(5.0);
       setMyTags([]);
     }
@@ -457,43 +462,72 @@ export default function ProfilePage() {
   // 微信推送：一键复制 PushPlus 公众号名称
   const handleCopyPushAccount = async () => {
     try {
-      await navigator.clipboard.writeText('push+推送加');
-      toast.success('已复制「push+推送加」，去微信粘贴搜索');
+      await navigator.clipboard.writeText('WxPusher');
+      toast.success('已复制「WxPusher」，去微信粘贴搜索');
     } catch {
-      toast.error('复制失败，请手动输入：push+推送加');
+      toast.error('复制失败，请手动输入：WxPusher');
     }
   };
 
-  // 微信推送：保存 Token（去空白与不可见字符；已绑定时输入空内容保存 = 解绑）
+  // 微信推送：打开弹窗（未绑定时同步生成绑定二维码）
+  const handlePushOpen = () => {
+    setPushOpen(true);
+    if (!pushUid && !pushQr && !pushQrLoading) void refreshPushQr();
+  };
+
+  // 生成/刷新绑定二维码（10 分钟有效）
+  const refreshPushQr = async () => {
+    setPushQrLoading(true);
+    setPushQr(null);
+    const qr = await createBindQrCode();
+    setPushQrLoading(false);
+    if (qr) {
+      setPushQr(qr);
+    } else {
+      toast.error('二维码生成失败，请稍后重试');
+    }
+  };
+
+  // 扫码绑定轮询：官方要求间隔 ≥ 10 秒；弹窗关闭、已绑定或二维码失效后停止
+  useEffect(() => {
+    if (!pushOpen || !pushQr || pushUid) return;
+    let stopped = false;
+    const timer = setInterval(() => {
+      void (async () => {
+        if (stopped) return;
+        const uid = await pollBindStatus(pushQr.code);
+        if (uid && !stopped) {
+          setPushUid(uid);
+          setPushQr(null);
+          toast.success('绑定成功，微信消息推送已开启');
+        }
+      })();
+    }, 10000);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [pushOpen, pushQr, pushUid]);
+
+  // 微信推送：手动粘贴 UID 绑定（扫码的备选路径；微信复制的 UID 可能夹带零宽字符需清洗）
   const handlePushSave = async () => {
     if (pushBusy) return;
-    // 微信里复制的 token 可能夹带零宽字符，肉眼不可见但会导致接口校验失败
-    const trimmed = sanitizePushPlusToken(pushInput);
+    const trimmed = pushInput.replace(/[\s\u200B\u200C\u200D\uFEFF]/g, '');
     if (!trimmed) {
-      if (!pushToken) {
-        toast.error('Token 不能为空，请先粘贴你的 PushPlus Token');
-        return;
-      }
-      // 清空解绑
-      setPushBusy(true);
-      try {
-        await updatePushplusToken(auth.userId, null);
-        setPushToken(null);
-        setPushInput('');
-        toast.success('已解绑，微信消息推送已关闭');
-      } catch {
-        toast.error('解绑失败，请稍后重试');
-      } finally {
-        setPushBusy(false);
-      }
+      toast.error('UID 不能为空，请粘贴你的 WxPusher UID');
+      return;
+    }
+    if (!trimmed.startsWith('UID_')) {
+      toast.error('UID 格式不对，应以 UID_ 开头（公众号「我的-我的UID」里复制）');
       return;
     }
     setPushBusy(true);
     try {
-      await updatePushplusToken(auth.userId, trimmed);
-      setPushToken(trimmed);
-      setPushInput(trimmed);
-      toast.success('保存成功，微信消息推送已开启');
+      await updateWxpusherUid(auth.userId, trimmed);
+      setPushUid(trimmed);
+      setPushQr(null);
+      setPushInput('');
+      toast.success('绑定成功，微信消息推送已开启');
     } catch {
       toast.error('保存失败，请稍后重试');
     } finally {
@@ -501,14 +535,30 @@ export default function ProfilePage() {
     }
   };
 
-  // 微信推送：发送测试消息，验证 token 是否有效
+  // 微信推送：解绑
+  const handlePushUnbind = async () => {
+    if (pushBusy) return;
+    setPushBusy(true);
+    try {
+      await updateWxpusherUid(auth.userId, null);
+      setPushUid(null);
+      setPushInput('');
+      toast.success('已解绑，微信消息推送已关闭');
+    } catch {
+      toast.error('解绑失败，请稍后重试');
+    } finally {
+      setPushBusy(false);
+    }
+  };
+
+  // 微信推送：发送测试消息（走服务端，appToken 不在前端）
   const handlePushTest = async () => {
-    if (!pushToken || pushTestBusy) return;
+    if (!pushUid || pushTestBusy) return;
     setPushTestBusy(true);
-    const result = await sendTestPushPlusMessage(pushToken);
+    const result = await sendTestWxPush();
     setPushTestBusy(false);
     if (result.ok) {
-      toast.success('测试消息已发送，请查看微信「push+推送加」公众号');
+      toast.success('测试消息已发送，请查看微信「WxPusher」公众号');
     } else {
       toast.error(`发送失败：${result.msg}`);
     }
@@ -854,17 +904,14 @@ export default function ProfilePage() {
                       <Droplets className="size-3.5" />
                       汇水池
                     </button>
-                    {/* 微信消息推送：PushPlus Token 绑定入口 */}
+                    {/* 微信消息推送：WxPusher 绑定入口 */}
                     <button
-                      onClick={() => {
-                        setPushInput(pushToken ?? '');
-                        setPushOpen(true);
-                      }}
+                      onClick={handlePushOpen}
                       className="ml-1 inline-flex items-center gap-1 rounded-full border border-sky-500/50 bg-sky-500/10 px-2.5 py-1 text-xs font-medium text-sky-700 hover:bg-sky-500/20 transition-colors"
                     >
                       <Bell className="size-3.5" />
                       微信推送
-                      {pushToken && (
+                      {pushUid && (
                         <span className="size-1.5 rounded-full bg-emerald-500" title="已绑定" />
                       )}
                     </button>
@@ -1457,14 +1504,14 @@ export default function ProfilePage() {
         onConfirm={(blob) => void handlePoolCropConfirm(blob)}
       />
 
-      {/* 微信消息推送：PushPlus Token 绑定（后续私信/求购匹配通知也走这里绑定的 token） */}
+      {/* 微信消息推送：WxPusher 绑定（扫码自动绑定为主，手动粘 UID 为备选） */}
       <Dialog open={pushOpen} onOpenChange={setPushOpen}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-1.5">
               <Bell className="size-4 text-sky-600" />
               微信消息推送
-              {pushToken ? (
+              {pushUid ? (
                 <Badge className="bg-emerald-500/15 text-emerald-700 border-0 text-[10px]">
                   已绑定
                 </Badge>
@@ -1475,81 +1522,128 @@ export default function ProfilePage() {
               )}
             </DialogTitle>
             <DialogDescription>
-              绑定后，站内新消息等通知会推送到你的微信
+              绑定后，站内新私信会实时推送到你的微信
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4">
-            {/* 操作指引 */}
-            <ol className="space-y-2 text-sm text-foreground/80">
-              <li className="flex items-start gap-2">
-                <span className="shrink-0 size-5 rounded-full bg-sky-500/15 text-sky-700 text-xs font-bold flex items-center justify-center mt-0.5">
-                  1
-                </span>
-                <span>
-                  微信搜索并关注公众号「push+推送加」
-                  <button
-                    onClick={() => void handleCopyPushAccount()}
-                    className="ml-1.5 inline-flex items-center gap-1 rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-xs font-medium text-sky-700 hover:bg-sky-500/20 transition-colors align-middle"
-                  >
-                    <Copy className="size-3" />
-                    一键复制
-                  </button>
-                </span>
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="shrink-0 size-5 rounded-full bg-sky-500/15 text-sky-700 text-xs font-bold flex items-center justify-center mt-0.5">
-                  2
-                </span>
-                <span>关注后公众号会自动发送你的专属 token，复制该 token</span>
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="shrink-0 size-5 rounded-full bg-sky-500/15 text-sky-700 text-xs font-bold flex items-center justify-center mt-0.5">
-                  3
-                </span>
-                <span>回到青藤集市，在下方粘贴并保存</span>
-              </li>
-            </ol>
-            {/* Token 输入 */}
-            <div className="space-y-2">
-              <Input
-                value={pushInput}
-                onChange={(e) => setPushInput(e.target.value)}
-                placeholder="粘贴你的 PushPlus Token"
-                maxLength={64}
-                className="font-mono text-sm"
-              />
-              <p className="text-xs text-muted-foreground">
-                {pushToken
-                  ? '已绑定，清空输入框后保存即可解绑'
-                  : 'Token 仅用于向你推送消息，可随时解绑'}
-              </p>
+
+          {pushUid ? (
+            /* 已绑定：展示状态 + 测试/解绑 */
+            <div className="space-y-4">
+              <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3.5 text-sm text-emerald-700">
+                已绑定微信推送（{pushUid.slice(0, 12)}…），新私信会推送到「WxPusher」公众号
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  className="flex-1 gap-1.5"
+                  disabled={pushTestBusy || pushBusy}
+                  onClick={() => void handlePushTest()}
+                >
+                  {pushTestBusy ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <Send className="size-4" />
+                  )}
+                  {pushTestBusy ? '发送中...' : '发送测试'}
+                </Button>
+                <Button
+                  variant="destructive"
+                  className="flex-1"
+                  disabled={pushBusy || pushTestBusy}
+                  onClick={() => void handlePushUnbind()}
+                >
+                  {pushBusy ? '处理中...' : '解绑'}
+                </Button>
+              </div>
             </div>
-          </div>
-          <DialogFooter className="gap-2 sm:gap-2">
-            {pushToken && (
-              <Button
-                variant="outline"
-                disabled={pushTestBusy || pushBusy}
-                onClick={() => void handlePushTest()}
-                className="gap-1.5"
-              >
-                {pushTestBusy ? (
-                  <Loader2 className="size-4 animate-spin" />
-                ) : (
-                  <Send className="size-4" />
-                )}
-                {pushTestBusy ? '发送中...' : '发送测试'}
-              </Button>
-            )}
-            <Button
-              disabled={pushBusy || pushTestBusy}
-              onClick={() => void handlePushSave()}
-              className="gap-1.5"
-            >
-              {pushBusy && <Loader2 className="size-4 animate-spin" />}
-              {pushBusy ? '保存中...' : '保存'}
-            </Button>
-          </DialogFooter>
+          ) : (
+            /* 未绑定：扫码（推荐）+ 手动 UID（备选） */
+            <div className="space-y-4">
+              {/* 扫码绑定：最便捷，无需复制任何东西 */}
+              <div className="flex flex-col items-center gap-2">
+                <div className="size-48 rounded-xl border border-border/60 bg-white flex items-center justify-center overflow-hidden">
+                  {pushQrLoading ? (
+                    <Loader2 className="size-6 animate-spin text-muted-foreground" />
+                  ) : pushQr ? (
+                    <img src={pushQr.qrUrl} alt="绑定二维码" className="size-full object-contain" />
+                  ) : (
+                    <button
+                      onClick={() => void refreshPushQr()}
+                      className="text-sm text-sky-600 hover:underline"
+                    >
+                      点击生成二维码
+                    </button>
+                  )}
+                </div>
+                <p className="text-sm text-foreground/80 text-center">
+                  微信扫一扫，关注公众号即完成绑定
+                </p>
+                <p className="text-xs text-muted-foreground text-center">
+                  二维码 10 分钟内有效，扫码后此窗口会自动完成绑定
+                  {pushQr && (
+                    <button
+                      onClick={() => void refreshPushQr()}
+                      className="ml-1 text-sky-600 hover:underline"
+                    >
+                      刷新二维码
+                    </button>
+                  )}
+                </p>
+              </div>
+
+              {/* 手动绑定备选 */}
+              <details className="border border-border/60 rounded-xl px-3.5 py-2.5">
+                <summary className="text-sm text-muted-foreground cursor-pointer select-none">
+                  扫码不方便？手动绑定
+                </summary>
+                <ol className="space-y-2 text-sm text-foreground/80 mt-3">
+                  <li className="flex items-start gap-2">
+                    <span className="shrink-0 size-5 rounded-full bg-sky-500/15 text-sky-700 text-xs font-bold flex items-center justify-center mt-0.5">
+                      1
+                    </span>
+                    <span>
+                      微信搜索并关注公众号「WxPusher」
+                      <button
+                        onClick={() => void handleCopyPushAccount()}
+                        className="ml-1.5 inline-flex items-center gap-1 rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-xs font-medium text-sky-700 hover:bg-sky-500/20 transition-colors align-middle"
+                      >
+                        <Copy className="size-3" />
+                        一键复制
+                      </button>
+                    </span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="shrink-0 size-5 rounded-full bg-sky-500/15 text-sky-700 text-xs font-bold flex items-center justify-center mt-0.5">
+                      2
+                    </span>
+                    <span>在公众号菜单「我的」→「我的UID」复制你的 UID</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="shrink-0 size-5 rounded-full bg-sky-500/15 text-sky-700 text-xs font-bold flex items-center justify-center mt-0.5">
+                      3
+                    </span>
+                    <span>粘贴到下方并保存</span>
+                  </li>
+                </ol>
+                <div className="flex gap-2 mt-3">
+                  <Input
+                    value={pushInput}
+                    onChange={(e) => setPushInput(e.target.value)}
+                    placeholder="粘贴你的 UID（UID_ 开头）"
+                    maxLength={64}
+                    className="font-mono text-sm"
+                  />
+                  <Button
+                    disabled={pushBusy}
+                    onClick={() => void handlePushSave()}
+                    className="shrink-0"
+                  >
+                    {pushBusy ? '保存中...' : '保存'}
+                  </Button>
+                </div>
+              </details>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
 

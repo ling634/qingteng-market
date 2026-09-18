@@ -412,13 +412,13 @@ export default function WantedPage() {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="bg-card border border-border/60 rounded-xl overflow-hidden divide-y divide-border/40"
+              className="space-y-2"
             >
               {items.map((w) => (
                 <button
                   key={w.id}
                   onClick={() => setDetail(w)}
-                  className="w-full flex items-center gap-3 px-3.5 py-2.5 text-left hover:bg-muted/40 transition-colors"
+                  className="w-full flex items-center gap-3 px-3.5 py-2.5 text-left bg-card border border-border/60 rounded-xl hover:border-primary/40 hover:shadow-sm transition-all"
                 >
                   <div className="flex-1 min-w-0">
                     <h3 className="font-medium text-sm text-foreground truncate leading-snug">
@@ -517,35 +517,35 @@ export default function WantedPage() {
             <Button variant="secondary" onClick={() => setDetail(null)}>
               关闭
             </Button>
-            {detail && detail.buyerId !== auth.userId && (
-              <Button
-                className="gap-1.5"
-                disabled={contacting === detail.id}
-                onClick={() => {
-                  const w = detail;
-                  setDetail(null);
-                  void handleContact(w);
-                }}
-              >
-                {contacting === detail.id ? (
-                  <Loader2 className="size-4 animate-spin" />
-                ) : (
-                  <MessageSquare className="size-4" />
-                )}
-                联系买家
-              </Button>
-            )}
+            {/* 自己的求购不可联系自己，按钮置灰提示 */}
+            <Button
+              className="gap-1.5"
+              disabled={!detail || detail.buyerId === auth.userId || contacting === detail.id}
+              title={detail?.buyerId === auth.userId ? '这是你自己发布的求购' : undefined}
+              onClick={() => {
+                const w = detail;
+                if (!w) return;
+                setDetail(null);
+                void handleContact(w);
+              }}
+            >
+              {detail && contacting === detail.id ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <MessageSquare className="size-4" />
+              )}
+              {detail?.buyerId === auth.userId ? '自己的求购' : '联系买家'}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* 求购配图裁剪（4:3 裁剪框） */}
+      {/* 求购配图裁剪（自由矩形，不锁长宽比） */}
       <ImageCropDialog
         open={!!cropSrc}
         imageSrc={cropSrc}
-        aspect={4 / 3}
         title="裁剪求购图片"
-        description="拖动框选出想展示的区域"
+        description="拖动框选出想展示的区域，长宽可自由调节"
         onCancel={() => {
           if (cropSrc) URL.revokeObjectURL(cropSrc);
           setCropSrc(null);
