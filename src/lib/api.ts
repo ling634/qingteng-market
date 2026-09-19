@@ -407,6 +407,24 @@ export async function insertWanted(
   if (error) throw error;
 }
 
+/** 编辑求购内容（仅求购中 open 状态在 UI 开放；RLS 限定只能改自己的） */
+export async function updateWanted(
+  id: string,
+  input: { title: string; category: string; budget: string; description: string; image?: string | null },
+): Promise<void> {
+  const { error } = await supabase
+    .from('wanted')
+    .update({
+      title: input.title,
+      category: input.category,
+      budget: input.budget,
+      description: input.description,
+      image: input.image ?? null,
+    })
+    .eq('id', id);
+  if (error) throw error;
+}
+
 /** 「我的求购」列表 */
 export async function fetchMyWanted(userId: string): Promise<IWanted[]> {
   const { data, error } = await supabase
@@ -983,14 +1001,49 @@ export interface IChatMessage {
   createdAt: string;
 }
 
+const CONVERSATION_SELECT =
+  '*, product:products(id, title, price, thumbs, images, status), buyer:profiles!conversations_buyer_id_fkey(id, nickname, avatar_url, verified), seller:profiles!conversations_seller_id_fkey(id, nickname, avatar_url, verified)';
+
+function mapConversationRow(
+  row: any,
+  userId: string,
+  unreadMap?: Map<string, number>,
+): IConversationItem {
+  const buyer = Array.isArray(row.buyer) ? row.buyer[0] : row.buyer;
+  const seller = Array.isArray(row.seller) ? row.seller[0] : row.seller;
+  const isBuyer = row.buyer_id === userId;
+  const other = isBuyer ? seller : buyer;
+  const product = Array.isArray(row.product) ? row.product[0] : row.product;
+  return {
+    id: row.id,
+    productId: row.product_id,
+    buyerId: row.buyer_id,
+    sellerId: row.seller_id,
+    otherId: other?.id ?? '',
+    otherNickname: other?.nickname ?? '同学',
+    otherAvatar: other?.avatar_url || DEFAULT_AVATAR,
+    otherVerified: other?.verified ?? false,
+    product: product
+      ? {
+          id: product.id,
+          title: product.title,
+          price: Number(product.price),
+          image: product.thumbs?.[0] || product.images?.[0] || '',
+          status: product.status,
+        }
+      : undefined,
+    lastMessage: row.last_message ?? '',
+    lastMessageAt: row.last_message_at ?? row.created_at,
+    unreadCount: unreadMap?.get(row.id) ?? 0,
+  };
+}
+
 export async function fetchConversations(
   userId: string,
 ): Promise<IConversationItem[]> {
   const { data, error } = await supabase
     .from('conversations')
-    .select(
-      '*, product:products(id, title, price, thumbs, images, status), buyer:profiles!conversations_buyer_id_fkey(id, nickname, avatar_url, verified), seller:profiles!conversations_seller_id_fkey(id, nickname, avatar_url, verified)',
-    )
+    .select(CONVERSATION_SELECT)
     .or(`buyer_id.eq.${userId},seller_id.eq.${userId}`)
     .order('last_message_at', { ascending: false })
     .limit(100);
@@ -1013,35 +1066,34 @@ export async function fetchConversations(
       const isBuyerRow = row.buyer_id === userId;
       return !(isBuyerRow ? row.buyer_hidden : row.seller_hidden);
     })
-    .map((row: any) => {
-    const buyer = Array.isArray(row.buyer) ? row.buyer[0] : row.buyer;
-    const seller = Array.isArray(row.seller) ? row.seller[0] : row.seller;
-    const isBuyer = row.buyer_id === userId;
-    const other = isBuyer ? seller : buyer;
-    const product = Array.isArray(row.product) ? row.product[0] : row.product;
-    return {
-      id: row.id,
-      productId: row.product_id,
-      buyerId: row.buyer_id,
-      sellerId: row.seller_id,
-      otherId: other?.id ?? '',
-      otherNickname: other?.nickname ?? '同学',
-      otherAvatar: other?.avatar_url || DEFAULT_AVATAR,
-      otherVerified: other?.verified ?? false,
-      product: product
-        ? {
-            id: product.id,
-            title: product.title,
-            price: Number(product.price),
-            image: product.thumbs?.[0] || product.images?.[0] || '',
-            status: product.status,
-          }
-        : undefined,
-      lastMessage: row.last_message ?? '',
-      lastMessageAt: row.last_message_at ?? row.created_at,
-      unreadCount: unreadMap.get(row.id) ?? 0,
-    };
-  });
+    .map((row: any) => mapConversationRow(row, userId, unreadMap));
+}
+
+/**
+ * 按 id 单查会话：不过滤本人隐藏标记。
+ * 用于「联系买家/卖家」重新打开一个之前被自己删除（隐藏）的会话——
+ * 先让它在消息页可聊，任一方发消息后触发器会永久取消隐藏。
+ */
+export async function fetchConversationById(
+  id: string,
+  userId: string,
+): Promise<IConversationItem | null> {
+  const { data, error } = await supabase
+    .from('conversations')
+    .select(CONVERSATION_SELECT)
+    .eq('id', id)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+
+  const { count } = await supabase
+    .from('messages')
+    .select('id', { count: 'exact', head: true })
+    .eq('conversation_id', id)
+    .is('read_at', null)
+    .neq('sender_id', userId);
+  const unreadMap = new Map<string, number>([[id, count ?? 0]]);
+  return mapConversationRow(data, userId, unreadMap);
 }
 
 /** 隐藏会话（支持批量）：仅自己不可见，对方记录保留；新消息会自动让它重新出现 */

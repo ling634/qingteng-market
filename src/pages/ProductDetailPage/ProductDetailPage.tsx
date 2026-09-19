@@ -713,7 +713,7 @@ export default function ProductDetailPage() {
               <p className="py-8 text-center text-sm text-muted-foreground leading-relaxed">
                 还没有买家私聊过这个商品，
                 <br />
-                可以让买家在私聊里自己点「预订」
+                有买家私聊后，可在私聊里直接点「预订」给TA
               </p>
             ) : (
               <div className="space-y-1 py-1">

@@ -47,6 +47,7 @@ import { supabase } from '@/lib/supabase';
 import RateTradeDialog from '@/components/RateTradeDialog';
 import {
   fetchConversations,
+  fetchConversationById,
   fetchConversationTrade,
   fetchMessages,
   fetchPayQr,
@@ -168,12 +169,15 @@ export default function MessagesPage() {
   const activeIdRef = useRef<string | null>(null);
   activeIdRef.current = activeId;
 
-  const loadConversations = useCallback(async () => {
-    if (!myId) return;
+  const loadConversations = useCallback(async (): Promise<IConversationItem[]> => {
+    if (!myId) return [];
     try {
-      setConversations(await fetchConversations(myId));
+      const list = await fetchConversations(myId);
+      setConversations(list);
+      return list;
     } catch {
       // 网络异常保持旧数据
+      return [];
     }
   }, [myId]);
 
@@ -209,7 +213,17 @@ export default function MessagesPage() {
             `你正在咨询「${res.product.title}」，请使用站内私信沟通，请勿添加微信/QQ，谨防诈骗。`,
           );
         }
-        await loadConversations();
+        const list = await loadConversations();
+        // 会话若被本人「微信式删除」过则不在列表中：单独拉取补进来，
+        // 让它可以直接聊（任一方发消息后触发器会永久取消隐藏）
+        if (targetId && !list.some((c) => c.id === targetId)) {
+          const single = await fetchConversationById(targetId, myId);
+          if (single) {
+            setConversations((prev) =>
+              prev.some((c) => c.id === single.id) ? prev : [single, ...prev],
+            );
+          }
+        }
         setActiveId(targetId);
         setShowListMobile(false);
       } catch {
@@ -344,7 +358,7 @@ export default function MessagesPage() {
   const [trade, setTrade] = useState<ITradeRecord | null>(null);
   const [tradeBusy, setTradeBusy] = useState(false);
   const [confirmAction, setConfirmAction] = useState<
-    null | 'reserve' | 'reserveTo' | 'receipt' | 'cancel'
+    null | 'reserveTo' | 'receipt' | 'cancel'
   >(null);
   const [rateTarget, setRateTarget] = useState<ITradeRecord | null>(null);
 
@@ -435,19 +449,16 @@ export default function MessagesPage() {
     );
   };
 
-  // 买家点「预订」/ 卖家点「预订给TA」
+  // 卖家点「预订给TA」（仅卖家可发起预订，买家随后确认收货）
   const doReserve = async () => {
     if (!activeConv?.product || !myId || tradeBusy) return;
-    const buyerId = iAmBuyer ? myId : activeConv.otherId;
     setTradeBusy(true);
     try {
-      await reserveProduct(activeConv.product.id, buyerId);
+      await reserveProduct(activeConv.product.id, activeConv.otherId);
       await sendSystemMessage(
         activeConv.id,
         myId,
-        iAmBuyer
-          ? '买家已预订该商品，请尽快线下交接'
-          : '卖家已将该商品预订给你，请尽快线下交接',
+        '卖家已将该商品预订给你，请尽快线下交接',
       );
       patchConvProductStatus('reserved');
       await loadTrade();
@@ -884,14 +895,20 @@ export default function MessagesPage() {
                         </Badge>
                       )
                     ) : activeConv.product.status === 'on_sale' ? (
-                      <Button
-                        size="sm"
-                        className="h-8"
-                        disabled={tradeBusy}
-                        onClick={() => setConfirmAction(iAmBuyer ? 'reserve' : 'reserveTo')}
-                      >
-                        预订
-                      </Button>
+                      iAmBuyer ? (
+                        <span className="text-xs text-muted-foreground text-right leading-tight max-w-28">
+                          与卖家沟通一致后，由卖家预订给你
+                        </span>
+                      ) : (
+                        <Button
+                          size="sm"
+                          className="h-8"
+                          disabled={tradeBusy}
+                          onClick={() => setConfirmAction('reserveTo')}
+                        >
+                          预订
+                        </Button>
+                      )
                     ) : (
                       <Badge variant="secondary" className="text-xs">
                         {activeConv.product.status === 'reserved'
@@ -913,15 +930,15 @@ export default function MessagesPage() {
                 <AlertDialogContent>
                   <AlertDialogHeader>
                     <AlertDialogTitle>
-                      {confirmAction === 'reserve' || confirmAction === 'reserveTo'
-                        ? '确认预订该商品？'
+                      {confirmAction === 'reserveTo'
+                        ? '确认预订给TA？'
                         : confirmAction === 'receipt'
                           ? '确认已收到商品？'
                           : '取消该预订？'}
                     </AlertDialogTitle>
                     <AlertDialogDescription>
-                      {confirmAction === 'reserve' || confirmAction === 'reserveTo'
-                        ? '预订后商品将标记为「已预订」并从集市隐藏购买入口，请尽快线下交接。'
+                      {confirmAction === 'reserveTo'
+                        ? '预订后商品将标记为「已预订」并从集市隐藏购买入口，等待买家确认收货。'
                         : confirmAction === 'receipt'
                           ? '确认后交易完成，商品标记为已售出，之后可以评价卖家。'
                           : '取消后商品将重新变为在售状态。'}
@@ -933,7 +950,7 @@ export default function MessagesPage() {
                       disabled={tradeBusy}
                       onClick={(e) => {
                         e.preventDefault();
-                        if (confirmAction === 'reserve' || confirmAction === 'reserveTo') {
+                        if (confirmAction === 'reserveTo') {
                           void doReserve();
                         } else if (confirmAction === 'receipt') {
                           void doReceipt();

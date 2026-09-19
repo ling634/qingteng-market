@@ -85,6 +85,7 @@ import {
   fetchMyWanted,
   setWantedStatus,
   deleteWanted,
+  updateWanted,
   fetchMyLatestVerification,
   submitVerification,
   updateWxpusherUid,
@@ -96,6 +97,7 @@ import {
 } from '@/lib/api';
 import { uploadMiscImage, uploadVerificationImage } from '@/lib/image';
 import { createBindQrCode, pollBindStatus, sendTestWxPush } from '@/lib/wxpusher';
+import WantedFormDialog from '@/components/WantedFormDialog';
 import type { IProduct } from '@/data/products';
 import type { IWanted } from '@/data/wanted';
 
@@ -328,6 +330,8 @@ export default function ProfilePage() {
   // 我的求购
   const [myWanted, setMyWanted] = useState<IWanted[]>([]);
   const [wantedManage, setWantedManage] = useState<IWanted | null>(null);
+  // 求购编辑（非空即打开编辑弹窗）
+  const [wantedEdit, setWantedEdit] = useState<IWanted | null>(null);
   const [wantedDelete, setWantedDelete] = useState<IWanted | null>(null);
   const [wantedBusy, setWantedBusy] = useState(false);
   // 认证申请（后置人工审核）
@@ -689,6 +693,22 @@ export default function ProfilePage() {
     } finally {
       setWantedBusy(false);
     }
+  };
+
+  // 保存求购编辑（标题/预算/描述/图片）
+  const handleWantedEditSave = async (p: {
+    title: string;
+    category: string;
+    budget: string;
+    description: string;
+    image: string | null;
+  }) => {
+    if (!wantedEdit) return;
+    await updateWanted(wantedEdit.id, p);
+    toast.success('求购已更新');
+    setWantedEdit(null);
+    setWantedManage(null);
+    void loadMyData();
   };
 
   const handleWantedDelete = async () => {
@@ -1766,6 +1786,12 @@ export default function ProfilePage() {
               <>
                 <Button
                   disabled={wantedBusy}
+                  onClick={() => setWantedEdit(wantedManage)}
+                >
+                  编辑内容
+                </Button>
+                <Button
+                  disabled={wantedBusy}
                   onClick={() => void handleWantedStatus(wantedManage, 'reserved')}
                 >
                   标记已预订
@@ -1818,6 +1844,14 @@ export default function ProfilePage() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* 编辑求购（标题/预算/描述/图片） */}
+      <WantedFormDialog
+        open={!!wantedEdit}
+        onOpenChange={(o) => !o && setWantedEdit(null)}
+        initial={wantedEdit}
+        onSubmit={handleWantedEditSave}
+      />
 
       {/* 删除求购确认（不可恢复） */}
       <AlertDialog

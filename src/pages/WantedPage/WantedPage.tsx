@@ -10,8 +10,7 @@ import {
   X,
   Loader2,
   ChevronRight,
-  ShieldAlert,
-  ImagePlus,
+  Pencil,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '@/components/ui/button';
@@ -24,26 +23,20 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from '@/components/ui/dialog';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import { Textarea } from '@/components/ui/textarea';
-import ImageCropDialog from '@/components/ImageCropDialog';
+import WantedFormDialog from '@/components/WantedFormDialog';
 import { Image } from '@/components/ui/image';
-import { uploadMiscImage } from '@/lib/image';
 import { useApp } from '@/context/AppContext';
 import { CATEGORIES } from '@/data/categories';
 import { toast } from 'sonner';
 import type { IWanted } from '@/data/wanted';
 import { supabase } from '@/lib/supabase';
-import { fetchWantedPage, insertWanted, getOrCreateConversation } from '@/lib/api';
-import { findSensitiveWordIn } from '@/lib/sensitive-words';
+import {
+  fetchWantedPage,
+  insertWanted,
+  updateWanted,
+  getOrCreateConversation,
+} from '@/lib/api';
 
 const PAGE_SIZE = 15;
 
@@ -55,15 +48,8 @@ export default function WantedPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   // 点击紧凑行 → 求购详情弹窗（完整描述 + 联系买家）
   const [detail, setDetail] = useState<IWanted | null>(null);
-  const [formCat, setFormCat] = useState('教材数码');
-  const [formTitle, setFormTitle] = useState('');
-  const [formBudget, setFormBudget] = useState('');
-  const [formDesc, setFormDesc] = useState('');
-  // 求购配图（选填一张）：选图→裁剪→立即上传，表单里只存最终 URL
-  const [formImage, setFormImage] = useState<string | null>(null);
-  const [cropSrc, setCropSrc] = useState<string | null>(null);
-  const [imgUploading, setImgUploading] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
+  // 编辑自己的求购（非空即打开编辑弹窗）
+  const [editTarget, setEditTarget] = useState<IWanted | null>(null);
   const [contacting, setContacting] = useState<string | null>(null);
 
   const [items, setItems] = useState<IWanted[]>([]);
@@ -136,71 +122,37 @@ export default function WantedPage() {
     return () => observer.disconnect();
   }, [hasMore, loading, page, loadPage]);
 
-  // 敏感词即时提示：命中即在弹窗内标红并禁用提交（提交时再兜底校验一次）
-  const sensitiveHit = findSensitiveWordIn(formTitle, formDesc);
-
-  const handleSubmit = async () => {
+  // 发布求购（表单校验/敏感词拦截在 WantedFormDialog 内完成）
+  const handleCreate = async (p: {
+    title: string;
+    category: string;
+    budget: string;
+    description: string;
+    image: string | null;
+  }) => {
     if (!auth.isLoggedIn) {
       toast.error('请先登录后再发布求购');
-      setDialogOpen(false);
       navigate('/profile');
       return;
     }
-    if (!formTitle.trim() || !formBudget.trim()) {
-      toast.error('请填写完整信息');
-      return;
-    }
-    // 敏感词兜底拦截（正常情况即时提示已拦住）
-    const hit = findSensitiveWordIn(formTitle, formDesc);
-    if (hit) {
-      toast.error(`内容包含违规词「${hit}」，请修改后再发布`);
-      return;
-    }
-    setSubmitting(true);
-    try {
-      await insertWanted(auth.userId, {
-        title: formTitle.trim(),
-        category: formCat,
-        budget: formBudget.trim(),
-        description: formDesc.trim(),
-        image: formImage ?? undefined,
-      });
-      setDialogOpen(false);
-      setFormTitle('');
-      setFormBudget('');
-      setFormDesc('');
-      setFormImage(null);
-      toast.success('求购发布成功！');
-      void loadPage(0, false);
-    } catch {
-      toast.error('发布失败，请稍后重试');
-    } finally {
-      setSubmitting(false);
-    }
+    await insertWanted(auth.userId, { ...p, image: p.image ?? undefined });
+    toast.success('求购发布成功！');
+    void loadPage(0, false);
   };
 
-  // 求购配图：选图 → 打开裁剪（4:3）
-  const handleImageFile = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file || imgUploading) return;
-    setCropSrc(URL.createObjectURL(file));
-  };
-
-  // 裁剪确认 → 立即上传，表单只保留 URL
-  const handleCropConfirm = async (blob: Blob) => {
-    if (cropSrc) URL.revokeObjectURL(cropSrc);
-    setCropSrc(null);
-    setImgUploading(true);
-    try {
-      const file = new File([blob], 'wanted.jpg', { type: 'image/jpeg' });
-      const url = await uploadMiscImage(auth.userId, file, 'wanted');
-      setFormImage(url);
-    } catch {
-      toast.error('图片上传失败，请重试');
-    } finally {
-      setImgUploading(false);
-    }
+  // 保存编辑（自己的求购）
+  const handleEditSave = async (p: {
+    title: string;
+    category: string;
+    budget: string;
+    description: string;
+    image: string | null;
+  }) => {
+    if (!editTarget) return;
+    await updateWanted(editTarget.id, p);
+    toast.success('求购已更新');
+    setEditTarget(null);
+    void loadPage(0, false);
   };
 
   const handleContact = async (w: IWanted) => {
@@ -238,133 +190,10 @@ export default function WantedPage() {
             <h1 className="text-base font-semibold">求购专区</h1>
             <p className="text-xs text-muted-foreground">发布需求，让卖家来找你</p>
           </div>
-          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-            <DialogTrigger asChild>
-              <Button className="gap-1.5 shadow-sm">
-                <Plus className="size-4" />
-                发布求购
-              </Button>
-            </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>发布求购</DialogTitle>
-                <DialogDescription>
-                  写下你需要的物品，让卖家主动联系你
-                </DialogDescription>
-              </DialogHeader>
-              <div className="space-y-4 py-2">
-                <div>
-                  <label className="text-sm font-medium mb-2 block">
-                    物品分类 <span className="text-destructive">*</span>
-                  </label>
-                  <Select value={formCat} onValueChange={setFormCat}>
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {CATEGORIES.filter((c) => c.key !== 'all').map((cat) => (
-                        <SelectItem key={cat.key} value={cat.key}>
-                          {cat.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div>
-                  <label className="text-sm font-medium mb-2 block">
-                    求购标题 <span className="text-destructive">*</span>
-                  </label>
-                  <Input
-                    placeholder="如：收一本高等数学教材"
-                    value={formTitle}
-                    onChange={(e) => setFormTitle(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <label className="text-sm font-medium mb-2 block">
-                    预算范围 <span className="text-destructive">*</span>
-                  </label>
-                  <Input
-                    placeholder="如：10-30元"
-                    value={formBudget}
-                    onChange={(e) => setFormBudget(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <label className="text-sm font-medium mb-2 block">详细描述</label>
-                  <Textarea
-                    placeholder="描述你需要的物品细节、成色要求、自提范围等"
-                    rows={3}
-                    value={formDesc}
-                    onChange={(e) => setFormDesc(e.target.value)}
-                  />
-                </div>
-                {/* 求购配图（选填一张，可裁剪）：帮卖家理解你想要什么样的 */}
-                <div>
-                  <label className="text-sm font-medium mb-2 block">
-                    求购图片
-                    <span className="text-xs text-muted-foreground ml-1 font-normal">
-                      选填，可框选裁剪
-                    </span>
-                  </label>
-                  {formImage ? (
-                    <div className="relative w-28">
-                      <Image
-                        src={formImage}
-                        alt="求购图片"
-                        className="w-28 h-28 object-cover rounded-lg border border-border/60"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setFormImage(null)}
-                        className="!absolute -top-1.5 -right-1.5 z-10 h-5 w-5 rounded-full bg-black/60 text-white flex items-center justify-center"
-                        aria-label="移除图片"
-                      >
-                        <X className="size-3" />
-                      </button>
-                    </div>
-                  ) : (
-                    <label className="block w-28 cursor-pointer">
-                      <div className="w-28 h-28 rounded-lg border-2 border-dashed border-border/60 bg-muted/30 flex flex-col items-center justify-center gap-1 text-muted-foreground hover:border-primary/40 hover:bg-primary/5 transition-colors">
-                        {imgUploading ? (
-                          <Loader2 className="size-5 animate-spin" />
-                        ) : (
-                          <ImagePlus className="size-5" />
-                        )}
-                        <span className="text-[11px]">
-                          {imgUploading ? '上传中' : '添加图片'}
-                        </span>
-                      </div>
-                      <input
-                        type="file"
-                        accept="image/*"
-                        className="hidden"
-                        onChange={handleImageFile}
-                        disabled={imgUploading}
-                      />
-                    </label>
-                  )}
-                </div>
-                {/* 敏感词即时提示（命中时禁用发布） */}
-                {sensitiveHit && (
-                  <div className="bg-destructive/10 border border-destructive/30 rounded-xl p-3 flex items-start gap-2.5">
-                    <ShieldAlert className="size-4 text-destructive shrink-0 mt-0.5" />
-                    <p className="text-sm text-destructive">
-                      内容包含违规词「{sensitiveHit}」，请修改后再发布
-                    </p>
-                  </div>
-                )}
-              </div>
-              <DialogFooter>
-                <Button variant="secondary" onClick={() => setDialogOpen(false)}>
-                  取消
-                </Button>
-                <Button onClick={handleSubmit} disabled={submitting || !!sensitiveHit}>
-                  {submitting ? '发布中...' : '立即发布'}
-                </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
+          <Button className="gap-1.5 shadow-sm" onClick={() => setDialogOpen(true)}>
+            <Plus className="size-4" />
+            发布求购
+          </Button>
         </div>
       </div>
 
@@ -517,40 +346,55 @@ export default function WantedPage() {
             <Button variant="secondary" onClick={() => setDetail(null)}>
               关闭
             </Button>
-            {/* 自己的求购不可联系自己，按钮置灰提示 */}
-            <Button
-              className="gap-1.5"
-              disabled={!detail || detail.buyerId === auth.userId || contacting === detail.id}
-              title={detail?.buyerId === auth.userId ? '这是你自己发布的求购' : undefined}
-              onClick={() => {
-                const w = detail;
-                if (!w) return;
-                setDetail(null);
-                void handleContact(w);
-              }}
-            >
-              {detail && contacting === detail.id ? (
-                <Loader2 className="size-4 animate-spin" />
-              ) : (
-                <MessageSquare className="size-4" />
-              )}
-              {detail?.buyerId === auth.userId ? '自己的求购' : '联系买家'}
-            </Button>
+            {detail && detail.buyerId === auth.userId ? (
+              /* 自己的求购：可直接编辑内容与图片 */
+              <Button
+                className="gap-1.5"
+                onClick={() => {
+                  const w = detail;
+                  setDetail(null);
+                  setEditTarget(w);
+                }}
+              >
+                <Pencil className="size-4" />
+                编辑
+              </Button>
+            ) : (
+              <Button
+                className="gap-1.5"
+                disabled={!detail || contacting === detail.id}
+                onClick={() => {
+                  const w = detail;
+                  if (!w) return;
+                  setDetail(null);
+                  void handleContact(w);
+                }}
+              >
+                {detail && contacting === detail.id ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <MessageSquare className="size-4" />
+                )}
+                联系买家
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* 求购配图裁剪（自由矩形，不锁长宽比） */}
-      <ImageCropDialog
-        open={!!cropSrc}
-        imageSrc={cropSrc}
-        title="裁剪求购图片"
-        description="拖动框选出想展示的区域，长宽可自由调节"
-        onCancel={() => {
-          if (cropSrc) URL.revokeObjectURL(cropSrc);
-          setCropSrc(null);
-        }}
-        onConfirm={(blob) => void handleCropConfirm(blob)}
+      {/* 发布求购 */}
+      <WantedFormDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        onSubmit={handleCreate}
+      />
+
+      {/* 编辑自己的求购 */}
+      <WantedFormDialog
+        open={!!editTarget}
+        onOpenChange={(o) => !o && setEditTarget(null)}
+        initial={editTarget}
+        onSubmit={handleEditSave}
       />
     </div>
   );
